@@ -19,7 +19,7 @@ abstract class Dim1FPModel(@transient inputRDD: RDD[Array[IndexedDataPoint]],
   regParam, stepSize, numIterations, miniBatchSize) {
   // directly give the parameters to the parent class.
 
-  override val coefficients = new Array[Double](miniBatchSize)
+  override val coefficients = new Array[Double](miniBatchSize) // include the step size.
 
   /**
     * @param inputRDD
@@ -58,8 +58,7 @@ abstract class Dim1FPModel(@transient inputRDD: RDD[Array[IndexedDataPoint]],
         val num_data_points = data_points.length
         while (id_batch < miniBatchSize) {
           id_global = rand.nextInt(num_data_points)
-          val custom_stepsize = stepSize / miniBatchSize * local_coefficients(id_batch)
-          updateModelViaOneData(model, data_points(id_global).features, custom_stepsize)
+          updateModelViaOneData(model, data_points(id_global).features, local_coefficients(id_batch))
 
           id_batch += 1
         }
@@ -119,7 +118,7 @@ abstract class Dim1FPModel(@transient inputRDD: RDD[Array[IndexedDataPoint]],
     partDotProduct
   }
 
-  def updateModelViaOneData(model: Array[Double], features: Vector, stepsize_per_sample: Double): Unit = {
+  def updateModelViaOneData(model: Array[Double], features: Vector, local_coeffi: Double): Unit = {
     // stepsize_per_sample = stepsize / batchsize * coefficients(i)
     features match {
       case sp: SparseVector => {
@@ -129,7 +128,7 @@ abstract class Dim1FPModel(@transient inputRDD: RDD[Array[IndexedDataPoint]],
         // sp.size = dimension of the whole vector,
         // index.size = nnz
         while (k < index.size) {
-          model(index(k)) -= stepsize_per_sample * values(k)
+          model(index(k)) -= local_coeffi * values(k)
           k += 1
         }
 
@@ -140,7 +139,7 @@ abstract class Dim1FPModel(@transient inputRDD: RDD[Array[IndexedDataPoint]],
     }
   }
 
-  def updateL2Regu(model: Array[Double], regParam: Double): Unit = {
+  override def updateL2Regu(model: Array[Double], regParam: Double): Unit = {
     if (regParam == 0)
       return
 

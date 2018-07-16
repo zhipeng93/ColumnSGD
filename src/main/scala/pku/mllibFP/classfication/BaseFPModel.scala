@@ -54,6 +54,8 @@ abstract class BaseFPModel[T: ClassTag](@transient inputRDD: RDD[Array[IndexedDa
                                       bcCoefficients: Broadcast[Array[T]],
                                       lastSeed: Int, newSeed: Int): Array[T]
 
+  def updateL2Regu(model: Array[T], regParam: Double): Unit
+
 
   def miniBatchSGD(): Unit = {
     val modelRDD: RDD[(Array[IndexedDataPoint], Array[T])] = generateModel(inputRDD)
