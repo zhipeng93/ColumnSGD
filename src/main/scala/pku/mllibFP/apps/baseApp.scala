@@ -12,7 +12,7 @@ object baseApp{
     val num_partitions = args(1).toInt
 
     val step_size = args(2).toDouble
-    val mini_batch_fraction = args(3).toInt
+    val mini_batch_fraction = args(3).toDouble
     val reg_para = args(4).toDouble
     val num_iteration = args(5).toInt
     val num_features = args(6).toInt

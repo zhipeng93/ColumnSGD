@@ -21,12 +21,11 @@ class SVM(@transient inputRDD: RDD[Array[IndexedDataPoint]],
     var id_batch = 0
     var id_global = 0
     val num_data_points = labels.length
-    val step_size_per_data_point = stepSize / miniBatchSize
     while (id_batch < miniBatchSize) {
       id_global = rand.nextInt(num_data_points)
       val label_scaled = 2 * labels(id_global) - 1
       if ((label_scaled * dot_products(id_batch)) < 1) {
-        coefficients(id_batch) = (0.0 - label_scaled) * step_size_per_data_point
+        coefficients(id_batch) = -label_scaled
 
         batch_loss += 1 - label_scaled * dot_products(id_batch) // max(0, 1-(2y-1)wx)
       }

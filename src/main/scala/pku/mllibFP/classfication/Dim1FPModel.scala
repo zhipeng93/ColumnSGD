@@ -1,7 +1,6 @@
 package pku.mllibFP.classfication
 
 import org.apache.spark.SparkException
-import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.mllib.linalg.{DenseVector, SparseVector, Vector}
 import org.apache.spark.rdd.RDD
 import pku.mllibFP.util.IndexedDataPoint
@@ -35,68 +34,40 @@ abstract class Dim1FPModel(@transient inputRDD: RDD[Array[IndexedDataPoint]],
     )
   }
 
+  /**
+    * for one-dimensional model, the coefficient for each data set is a [double]
+    * @param dot_products
+    * @param seed
+    * @return loss, also the coefficients are stored in ${coefficients}
+    */
   override def computeCoefficients(dot_products: Array[Double], seed: Int): Double
 
-  override def updateModelAndComputeDotProduct(modelRDD: RDD[(Array[IndexedDataPoint], Array[Double])],
-                                               bcCoefficients: Broadcast[Array[Double]],
-                                               lastSeed: Int, newSeed: Int): Array[Double] = {
-    // avoid serialization overhead
-    modelRDD.mapPartitions(
-      iter => {
-        val first_ele = iter.next()
-        val data_points: Array[IndexedDataPoint] = first_ele._1
-        val model: Array[Double] = first_ele._2
 
-        // update model first
-        var worker_start_time = System.currentTimeMillis()
-        var rand = new Random(lastSeed)
-        val local_coefficients: Array[Double] = bcCoefficients.value
-        updateL2Regu(model, regParam)
+  override def computeInterResults(model: Array[Double], data_points: Array[IndexedDataPoint],
+                                 new_seed: Int): Array[Double] = {
 
-        var id_batch = 0
-        var id_global = 0
-        val num_data_points = data_points.length
-        while (id_batch < miniBatchSize) {
-          id_global = rand.nextInt(num_data_points)
-          updateModelViaOneData(model, data_points(id_global).features, local_coefficients(id_batch))
-
-          id_batch += 1
-        }
-        logInfo(s"ghandFP=WorkerTime=updateModel:${(System.currentTimeMillis() - worker_start_time) / 1000.0}")
-
-        // compute dot product
-        worker_start_time = System.currentTimeMillis()
-
-        val results: Array[Double] = new Array[Double](miniBatchSize)
-        rand = new Random(newSeed)
-        id_batch = 0
-        id_global = 0
-        while (id_batch < miniBatchSize) {
-          id_global = rand.nextInt(num_data_points)
-          results(id_batch) = partDotProductOneData(model, data_points(id_global).features)
-          id_batch += 1
-        }
-        logInfo(s"ghandFP=WorkerTime=BatchDotProduct:${(System.currentTimeMillis() - worker_start_time) / 1000.0}")
-
-        Iterator(results)
-
-      }
-    ).reduce(sumArray)
-
-  }
-
-  def sumArray(array1: Array[Double], array2: Array[Double]): Array[Double] = {
-    assert(array1.length == array2.length)
-    var k: Int = 0
-    while (k < array1.length) {
-      array1(k) += array2(k)
-      k += 1
+    val rand = new Random(new_seed)
+    var id_batch = 0
+    var id_global = 0
+    val num_data_points = data_points.length
+    val result: Array[Double] = new Array[Double](miniBatchSize)
+    while(id_batch < miniBatchSize){
+      id_global = rand.nextInt(num_data_points)
+      computeInterResultsOneData(model, data_points(id_global).features, result, id_batch)
+      id_batch += 1
     }
-    array1
+
+    result
   }
 
-  def partDotProductOneData(model: Array[Double], features: Vector): Double = {
-    val partDotProduct: Double = features match {
+  /**
+    * for 1-dim model, the dot product is always w*x
+    * @param model
+    * @param features
+    * @return
+    */
+  def computeInterResultsOneData(model: Array[Double], features: Vector, result: Array[Double], id_batch: Int): Unit = {
+    result(id_batch) = features match {
       case sp: SparseVector => {
         // w * x
         var result: Double = 0.0
@@ -115,11 +86,11 @@ abstract class Dim1FPModel(@transient inputRDD: RDD[Array[IndexedDataPoint]],
       }
 
     }
-    partDotProduct
   }
 
-  def updateModelViaOneData(model: Array[Double], features: Vector, local_coeffi: Double): Unit = {
-    // stepsize_per_sample = stepsize / batchsize * coefficients(i)
+  override def updateModelViaOneData(model: Array[Double], features: Vector,
+                                     local_coefficient: Array[Double], id_batch: Int): Unit = {
+
     features match {
       case sp: SparseVector => {
         var k = 0
@@ -127,8 +98,9 @@ abstract class Dim1FPModel(@transient inputRDD: RDD[Array[IndexedDataPoint]],
         val values: Array[Double] = sp.values
         // sp.size = dimension of the whole vector,
         // index.size = nnz
+        val step_size_per_data_point = stepSize / miniBatchSize
         while (k < index.size) {
-          model(index(k)) -= local_coeffi * values(k)
+          model(index(k)) -= step_size_per_data_point * local_coefficient(id_batch) * values(k)
           k += 1
         }
 
@@ -137,6 +109,7 @@ abstract class Dim1FPModel(@transient inputRDD: RDD[Array[IndexedDataPoint]],
         throw new SparkException("Currently we do not support denseVecor")
       }
     }
+
   }
 
   override def updateL2Regu(model: Array[Double], regParam: Double): Unit = {
@@ -148,5 +121,15 @@ abstract class Dim1FPModel(@transient inputRDD: RDD[Array[IndexedDataPoint]],
       model(k) *= (1 - regParam)
       k += 1
     }
+  }
+
+  override def aggregateResult(array1: Array[Double], array2: Array[Double]): Array[Double] = {
+    assert(array1.length == array2.length)
+    var k: Int = 0
+    while (k < array1.length) {
+      array1(k) += array2(k)
+      k += 1
+    }
+    array1
   }
 }

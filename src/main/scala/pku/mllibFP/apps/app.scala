@@ -2,7 +2,7 @@ package pku.mllibFP.apps
 
 import org.apache.spark.{SparkConf, SparkContext}
 import pku.mllibFP.util.MLUtils
-import pku.mllibFP.classfication.{LR, MLR, SVM}
+import pku.mllibFP.classfication.{LR, MLR, SVM, FM}
 
 object app{
   def main(args: Array[String]): Unit ={
@@ -53,6 +53,24 @@ object app{
           numIterations = num_iteration,
           miniBatchSize = mini_batch_size,
           modelK = 2).miniBatchSGD()
+
+      case "FM" => {
+        val vk = {
+          if (args.length > 8)
+            args(8).toInt
+          else
+            10
+        }
+        new FM(inputRDD = fp_rdd._1,
+          labels = fp_rdd._2,
+          numFeatures = num_features,
+          numPartitions = num_partitions,
+          regParam = reg_para,
+          stepSize = step_size,
+          numIterations = num_iteration,
+          miniBatchSize = mini_batch_size,
+          modelK = vk).miniBatchSGD()
+      }
     }
 
   }

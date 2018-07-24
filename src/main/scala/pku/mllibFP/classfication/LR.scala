@@ -21,13 +21,12 @@ class LR(@transient inputRDD: RDD[Array[IndexedDataPoint]],
     var id_batch = 0
     var id_global = 0
     val num_data_points = labels.length
-    val step_size_per_data_point = stepSize / miniBatchSize
 
     while (id_batch < miniBatchSize) {
       id_global = rand.nextInt(num_data_points)
       val label_scaled = 2 * labels(id_global) - 1
 
-      coefficients(id_batch) = step_size_per_data_point * (-label_scaled) /
+      coefficients(id_batch) = -label_scaled /
         (1 + math.exp(label_scaled * dot_products(id_batch)))
 
       // The following is equivalent to log(1 + exp(margin)) but more numerically stable.
