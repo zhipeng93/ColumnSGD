@@ -2,7 +2,6 @@ package pku.mllibFP.classfication
 
 import pku.mllibFP.util.{IndexedDataPoint, MLUtils}
 import org.apache.spark.rdd.RDD
-import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.mllib.linalg.{DenseVector, SparseVector, Vector}
 import org.apache.spark.SparkException
 
