@@ -47,8 +47,9 @@ class MLR(@transient inputRDD: RDD[Array[IndexedDataPoint]],
         val step_size_per_data_point = stepSize / miniBatchSize
         while(k < modelK) {
           var i = 0
+          val kth_coeff = local_coefficient(k)(id_batch)
           while (i < index.size) {
-            model(k)(index(i)) -= values(i) * step_size_per_data_point * local_coefficient(k)(id_batch)
+            model(k)(index(i)) -= values(i) * step_size_per_data_point * kth_coeff
             i += 1
           }
           k += 1
@@ -86,7 +87,7 @@ class MLR(@transient inputRDD: RDD[Array[IndexedDataPoint]],
     while(k < modelK){
       var i = 0
       while(i < miniBatchSize){
-        coefficients(k)(i) /= normalization(i)
+        coefficients(k)(i) /= normalization(i)  // this is negative coefficients for convenience
         i += 1
       }
       k += 1
@@ -101,9 +102,9 @@ class MLR(@transient inputRDD: RDD[Array[IndexedDataPoint]],
       id_global = rand.nextInt(num_data_points)
       val label: Int = labels(id_global).toInt // labels start from 0, follows 0, 1, 2, ...
       // batchloss = \sum_{n=1, N} \sum_{k=1, K} -t_{nk} * ln(y_nk)
-      batch_loss += -math.log(coefficients(label)(id_batch))
+      batch_loss += -math.log(coefficients(label)(id_batch)) // reverse negative coefficients
 
-      coefficients(label)(id_batch) += 1
+      coefficients(label)(id_batch) -= 1
       id_batch += 1
     }
 
