@@ -48,10 +48,12 @@ class FM(@transient inputRDD: RDD[Array[IndexedDataPoint]],
         val init_model = Array.ofDim[Double](modelK + 1, feature_num_per_partition)
         // initialize model V.
         var i = 1
+        val rand = new Random()
         while (i < init_model.length) {
           var j = 0
           while (j < init_model(1).length) {
-            init_model(i)(j) = 1.0 / modelK.toDouble
+            init_model(i)(j) = rand.nextGaussian() * 0.01 // ~(0, 0.01)
+//            init_model(i)(j) = 0 // this is purely LR.
             j += 1
           }
           i += 1
