@@ -151,16 +151,13 @@ abstract class BaseFPModel[T: ClassTag](@transient inputRDD: RDD[Array[IndexedDa
 
       logInfo(s"ghandFP=DriverTime=ComputeDotProductAndUpdateModelTime(reduce dotProducts included):" +
         s" ${(System.currentTimeMillis() - start_time) / 1000.0}")
-      start_time = System.currentTimeMillis()
 
       val loss: Double = computeCoefficients(dot_products, cur_seed)
 
-      logInfo(s"ghandFP=LOSS=BatchLoss:${loss}")
-      logInfo(s"ghandFP=DriverTime=ComputeCoefficients(no communication, only in driver): " +
-        s"${(System.currentTimeMillis() - start_time) / 1000.0}")
+      logInfo(s"ghandFP=DriverTime=trainTime[ComputeCoefficients + ComputeDotProductAndUpdateModelTime]:pwd" +
+        s"${(System.currentTimeMillis() - start_time) / 1000.0}=BatchLoss:${loss}")
 
       start_time = System.currentTimeMillis()
-
       iter_id += 1
       bcCoefficients.destroy()
     }

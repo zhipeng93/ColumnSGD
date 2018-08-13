@@ -25,6 +25,7 @@ object MLlibApp{
 
     // RDD[(Int, Array[IndexedDataPoint])], Array[Double])
     val data_rdd: RDD[LabeledPoint] = MLUtils.loadLibSVMFile(sparkContext, in_path, num_features, minPartitions = num_partitions)
+      .repartition(num_partitions)
       .persist(StorageLevel.MEMORY_ONLY)
 
     val models: Array[String] = model_name.split("-")
