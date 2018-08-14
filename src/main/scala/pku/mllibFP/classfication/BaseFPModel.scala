@@ -154,7 +154,7 @@ abstract class BaseFPModel[T: ClassTag](@transient inputRDD: RDD[Array[IndexedDa
 
       val loss: Double = computeCoefficients(dot_products, cur_seed)
 
-      logInfo(s"ghandFP=DriverTime=trainTime[ComputeCoefficients + ComputeDotProductAndUpdateModelTime]:pwd" +
+      logInfo(s"ghandFP=DriverTime=trainTime[ComputeCoefficients + ComputeDotProductAndUpdateModelTime]:" +
         s"${(System.currentTimeMillis() - start_time) / 1000.0}=BatchLoss:${loss}")
 
       start_time = System.currentTimeMillis()
