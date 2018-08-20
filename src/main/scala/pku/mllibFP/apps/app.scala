@@ -2,7 +2,7 @@ package pku.mllibFP.apps
 
 import org.apache.spark.{SparkConf, SparkContext}
 import pku.mllibFP.util.MLUtils
-import pku.mllibFP.classfication.{LR, MLR, SVM, FM}
+import pku.mllibFP.classfication.{LR, SVM, MLR, FM}
 
 object app{
   def main(args: Array[String]): Unit ={
@@ -20,7 +20,7 @@ object app{
     val sparkConf = new SparkConf().setAppName("FP-" + model_name)
     val sparkContext = new SparkContext(sparkConf)
 
-    // RDD[(Int, Array[IndexedDataPoint])], Array[Double])
+    // RDD[Array[LabeledPartDataPoint]]
     val fp_rdd = MLUtils.loadLibSVMFileFeatureParallel(sparkContext, in_path, num_features, num_partitions)
     // not cached, to be cached in FPModel
 
@@ -28,8 +28,7 @@ object app{
     for(m <- models) {
       m match {
         case "SVM" =>
-          new SVM(inputRDD = fp_rdd._1,
-            labels = fp_rdd._2,
+          new SVM(inputRDD = fp_rdd,
             numFeatures = num_features,
             numPartitions = num_partitions,
             regParam = reg_para,
@@ -37,8 +36,7 @@ object app{
             numIterations = num_iteration,
             miniBatchSize = mini_batch_size).miniBatchSGD()
         case "LR" =>
-          new LR(inputRDD = fp_rdd._1,
-            labels = fp_rdd._2,
+          new LR(inputRDD = fp_rdd,
             numFeatures = num_features,
             numPartitions = num_partitions,
             regParam = reg_para,
@@ -52,8 +50,7 @@ object app{
             else
               2
           }
-          new MLR(inputRDD = fp_rdd._1,
-            labels = fp_rdd._2,
+          new MLR(inputRDD = fp_rdd,
             numFeatures = num_features,
             numPartitions = num_partitions,
             regParam = reg_para,
@@ -69,8 +66,7 @@ object app{
             else
               10
           }
-          new FM(inputRDD = fp_rdd._1,
-            labels = fp_rdd._2,
+          new FM(inputRDD = fp_rdd,
             numFeatures = num_features,
             numPartitions = num_partitions,
             regParam = reg_para,

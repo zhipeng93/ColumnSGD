@@ -1,226 +1,134 @@
 package pku.mllibFP.classfication
 
-import pku.mllibFP.util.{IndexedDataPoint, MLUtils}
-import org.apache.spark.rdd.RDD
 import org.apache.spark.mllib.linalg.{DenseVector, SparseVector, Vector}
-import org.apache.spark.SparkException
-
+import pku.mllibFP.util.{ColumnMLDenseVectorException, LabeledPartDataPoint, MLUtils}
+import org.apache.spark.rdd.RDD
 
 import scala.util.Random
 
-/**
-  * @param inputRDD
-  * @param labels
-  * @param numFeatures
-  * @param numPartitions
-  * @param regParam
-  * @param stepSize
-  * @param numIterations
-  * @param miniBatchSize
-  * @param modelK : dimension of embeddings. This class can only be used for binary classification.
-  */
-class FM(@transient inputRDD: RDD[Array[IndexedDataPoint]],
-         @transient labels: Array[Double],
-         numFeatures: Int,
-         numPartitions: Int,
-         regParam: Double,
-         stepSize: Double,
-         numIterations: Int,
-         miniBatchSize: Int,
-         modelK: Int) extends DimKFPModel(inputRDD, labels, numFeatures, numPartitions,
-  regParam, stepSize, numIterations, miniBatchSize, modelK) {
+class FM(@transient inputRDD: RDD[Array[LabeledPartDataPoint]],
+          numFeatures: Int,
+          numPartitions: Int,
+          regParam: Double,
+          stepSize: Double,
+          numIterations: Int,
+          miniBatchSize: Int,
+          modelK: Int) extends BaseFPModel(inputRDD, numFeatures, numPartitions,
+  regParam, stepSize, numIterations, miniBatchSize) {
 
-  // size of coefficients
-  // first line is the coefficient for w
-  // the next k lines S_f on a batch of data points.
-  override val coefficients = Array.ofDim[Double](modelK + 1, miniBatchSize) //  miniBatchSize * modelK
 
-  /**
-    * @param inputRDD
-    * @return dataRDD integrated with modelRDD with locality preserved, here model is {1 + k \times localFeatureNum}
-    *         the first array is w, the rest k arrays are V. [Note that V cannot be initialized as all zeros.]
-    */
-  override def generateModel(inputRDD: RDD[Array[IndexedDataPoint]]): RDD[(Array[IndexedDataPoint], Array[Array[Double]])] = {
-    val feature_num_per_partition = numFeatures / numPartitions + 1
-    inputRDD.mapPartitions(
+  override def generateModel(inputRDD: RDD[Array[LabeledPartDataPoint]]): RDD[(Array[LabeledPartDataPoint],
+    Array[Array[Double]])] = {
+    // dotProduct = sum_i (w_i * x_i + 0.5 * \sum_f (v_{if}^2 * x_i^2)), S_f  = V_f * x
+    intermediateResults = Array.ofDim[Double](modelK + 1, miniBatchSize)
+    // generate model
+    inputRDD.mapPartitions{
       iter => {
-        val data_points: Array[IndexedDataPoint] = iter.next()
-        val init_model = Array.ofDim[Double](modelK + 1, feature_num_per_partition)
-        // initialize model V.
-        var i = 1
+        val init_model: Array[Array[Double]] = Array.ofDim[Double](modelK + 1, numFeatures / numPartitions + 1)
         val rand = new Random()
-        while (i < init_model.length) {
-          var j = 0
-          while (j < init_model(1).length) {
+        for(i <- 1 until init_model.length){
+          for(j <- 0 until init_model(0).length){
             init_model(i)(j) = rand.nextGaussian() * 0.01 // ~(0, 0.01)
-//            init_model(i)(j) = 0 // this is purely LR.
-            j += 1
+            // init_model(i)(j) = 0 // this is purely LR.
           }
-          i += 1
         }
-        Iterator((data_points, init_model))
+        Iterator((iter.next(), init_model))
       }
-    )
-  }
-
-  /**
-    * @param dot_products . The first array is w*x. The next K arrays is S_f = \sum_{i=1}^{n} v_{i,f} * x_i.
-    *                     The last K arrays is G_f = \sum_{i=1}^{n}v_{i,f}^2 * x_i^2
-    * @param seed
-    * @return loss, also the coefficients are stored in ${coefficients}
-    */
-  override def computeCoefficients(dot_products: Array[Array[Double]], seed: Int): Double = {
-
-    var batch_loss = 0.0
-    // store f(x) of factorization machine in the first array, i.e., dot_product(0)
-    val fx: Array[Double] = dot_products(0)
-    var i = 1
-    // process S_f
-    while (i <= modelK) {
-      var idx = 0
-      while (idx < miniBatchSize) {
-        fx(idx) += math.pow(dot_products(i)(idx), 2) / 2
-        idx += 1
-      }
-      i += 1
     }
-    // process G_f
-    i = modelK + 1
-    while (i <= modelK * 2) {
-      var idx = 0
-      while (idx < miniBatchSize) {
-        fx(idx) += dot_products(i)(idx) / 2
-        idx += 1
-      }
-      i += 1
-    }
-
-    val num_data_points = labels.length
-    // compute coefficients and loss
-    val rand = new Random(seed)
-    var id_batch = 0
-    var label_scaled = 0.0
-
-    while (id_batch < miniBatchSize) {
-      label_scaled = 2 * labels(rand.nextInt(num_data_points)) - 1
-      batch_loss += MLUtils.log1pExp(-label_scaled * fx(id_batch))
-      // coefficients for w.
-      coefficients(0)(id_batch) = -label_scaled / (1 + math.exp(label_scaled * fx(id_batch)))
-
-      id_batch += 1
-    }
-
-    // copy S_f to coeffcients
-    i = 1
-    while (i <= modelK) {
-      var j = 0
-      while (j < miniBatchSize) {
-        coefficients(i)(j) = dot_products(i)(j)
-        j += 1
-      }
-      i += 1
-    }
-
-    batch_loss / miniBatchSize
   }
 
 
-  override def computeInterResults(model: Array[Array[Double]], data_points: Array[IndexedDataPoint],
-                                 new_seed: Int): Array[Array[Double]] = {
+  override def computeInterResults(model: Array[Array[Double]], data_points: Array[LabeledPartDataPoint],
+                                   new_seed: Int): Array[Array[Double]] = {
+    // first line: w*x, next k line: S_f, next k line: G_f
+    val result: Array[Array[Double]] = Array.ofDim[Double](modelK + 1, miniBatchSize)
 
-    val result: Array[Array[Double]] = Array.ofDim[Double](modelK * 2 + 1, miniBatchSize)
     val rand = new Random(new_seed)
-    var id_batch = 0
-    var id_global = 0
     val num_data_points = data_points.length
-    while (id_batch < miniBatchSize) {
-      id_global = rand.nextInt(num_data_points)
-      computeInterResultsOneData(model, data_points(id_global).features, result, id_batch)
-      id_batch += 1
+    for(id_batch <- 0 until miniBatchSize){
+      val id_global = rand.nextInt(num_data_points)
+      data_points(id_global).features match {
+        case sp: SparseVector => {
+          val indices = sp.indices
+          val values = sp.values
+          // wx
+          for(idx <- 0 until indices.length){
+            result(0)(id_batch) += model(0)(indices(idx)) * values(idx)
+          }
+          // V_f
+          for(id_model <- 1 until (modelK + 1)){
+            for(idx <- 0 until indices.length) {
+              result(id_model)(id_batch) += model(id_model)(indices(idx)) * values(idx) // S_f
+              result(0)(id_batch) += 0.5 * math.pow(model(id_model)(indices(idx)) * values(idx), 2) // G_f
+            }
+          }
+        }
+        case dp: DenseVector => {
+          throw new ColumnMLDenseVectorException
+        }
+      }
     }
-
     result
   }
 
+  override def computeBatchLoss(interResults: Array[Array[Double]], labels: Array[Double],
+                                seed: Int): Double = {
+    val rand = new Random(seed)
+    var batchLoss: Double = 0
+    val num_data_points = labels.length
 
-  def computeInterResultsOneData(model: Array[Array[Double]], features: Vector,
-                            results: Array[Array[Double]], id_batch: Int): Unit = {
-    features match {
-      case sp: SparseVector => {
-        val index: Array[Int] = sp.indices
-        val values: Array[Double] = sp.values
-        // compute dot product: wx
-        var i = 0
-        while (i < index.size) {
-          results(0)(id_batch) += model(0)(index(i)) * values(i)
-          i += 1
-        }
-
-        // compute S_f, G_f
-        var k = 1
-        while (k <= modelK) {
-          i = 0
-          while (i < index.size) {
-            val tmp = model(k)(index(i)) * values(i)
-            results(k)(id_batch) += tmp // S_f
-            results(k + modelK)(id_batch) += tmp * tmp // G_f
-
-            i += 1
-          }
-          k += 1
-        }
-
+    val s2_f: Array[Double] = new Array[Double](miniBatchSize)
+    for(id_model <- 1 until (modelK + 1)){
+      for(id_batch <- 0 until miniBatchSize){
+        s2_f(id_batch) += math.pow(interResults(id_model)(id_batch), 2)
       }
-      case dp: DenseVector => {
-        throw new SparkException("Currently We do not support denseVecor")
-      }
-
     }
-    null
+
+    for(id_batch <- 0 until miniBatchSize){
+      val id_global = rand.nextInt(num_data_points)
+      val label_scaled = 2 * labels(id_global) - 1
+      batchLoss += MLUtils.log1pExp(-label_scaled * (interResults(0)(id_batch) + 0.5 * s2_f(id_batch)))
+    }
+    batchLoss / miniBatchSize
   }
 
-  /**
-    * @param model
-    * @param features
-    * @param local_coefficient
-    */
-  override def updateModelViaOneData(model: Array[Array[Double]], features: Vector,
-                                     local_coefficient: Array[Array[Double]], id_batch: Int): Unit = {
-    val step_size_per_data_point = stepSize / miniBatchSize
-    features match {
-      case sp: SparseVector => {
-        val index: Array[Int] = sp.indices
-        val values: Array[Double] = sp.values
-        // sp.size = dimension of the whole vector,
-        // index.size = nnz
-        updateL2Regu(model, regParam) // may need to change due to different regularization terms
 
-        // update w
-        val w = model(0)
-        val w_coeff = local_coefficient(0)(id_batch)
-        var i = 0
-        while (i < index.length) {
-          w(index(i)) -= step_size_per_data_point * w_coeff * values(i)
-          i += 1
-        }
-
-        // update V
-        var k = 1
-        while (k <= modelK) {
-          val kx = local_coefficient(k)(id_batch)
-          i = 0
-          while (i < index.length) {
-            model(k)(index(i)) -= step_size_per_data_point * w_coeff *
-              (values(i) * kx - model(k)(index(i)) * math.pow(values(i), 2))
-
-            i += 1
+  override def updateModel(model: Array[Array[Double]], data_points: Array[LabeledPartDataPoint],
+                           interResults: Array[Array[Double]], last_seed: Int): Unit ={
+    val rand = new Random(last_seed)
+    // update the model
+    val num_data_points = data_points.length
+    for(id_batch <- 0 until miniBatchSize){
+      val id_global = rand.nextInt(num_data_points)
+      val tmp_data_point = data_points(id_global)
+      // use one data point to update the model (k sub-models)
+      tmp_data_point.features match {
+        case sp: SparseVector => {
+          val indices = sp.indices
+          val values = sp.values
+          val label_scaled = 2 * tmp_data_point.label - 1
+          var tmp_s2_f = 0.0
+          for(id_model <- 1 until (modelK + 1)){
+            tmp_s2_f += math.pow(interResults(id_model)(id_batch), 2)
           }
-          k += 1
-        }
+          val tmp_grad = -label_scaled / (1 + math.exp(label_scaled * (interResults(0)(id_batch) + tmp_s2_f * 0.5) ))
 
-      }
-      case dp: DenseVector => {
-        throw new SparkException("Currently we do not support denseVecor")
+          // update w
+          for(idx <- 0 until indices.length) {
+            model(0)(indices(idx)) -= stepSize / miniBatchSize * tmp_grad * values(idx)
+          }
+          // update v_f
+          for(id_model <- 1 until (modelK + 1)) {
+            for(idx <- 0 until indices.length) {
+              model(id_model)(indices(idx)) -= stepSize / miniBatchSize * tmp_grad *
+                (values(idx) * interResults(id_model)(id_batch) -
+                  model(id_model)(indices(idx)) * values(idx) * values(idx))
+            }
+          }
+        }
+        case dp: DenseVector => {
+          throw new ColumnMLDenseVectorException
+        }
       }
     }
   }
