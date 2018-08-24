@@ -23,10 +23,17 @@ object MLlibApp{
     val sparkConf = new SparkConf().setAppName("MLlib-" + model_name)
     val sparkContext = new SparkContext(sparkConf)
 
+
+    val start_loading = System.currentTimeMillis()
+    // RDD[Array[LabeledPartDataPoint]]
     // RDD[(Int, Array[IndexedDataPoint])], Array[Double])
     val data_rdd: RDD[LabeledPoint] = MLUtils.loadLibSVMFile(sparkContext, in_path, num_features, minPartitions = num_partitions)
       .repartition(num_partitions)
       .persist(StorageLevel.MEMORY_ONLY)
+
+    data_rdd.count()
+    System.out.println(s"ghand=loadingTime:${(System.currentTimeMillis() - start_loading)/1000.0}")
+
 
     val models: Array[String] = model_name.split("-")
     for(m <- models) {

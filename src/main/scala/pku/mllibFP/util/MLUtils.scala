@@ -60,6 +60,7 @@ object MLUtils extends Logging {
 
     // for shuffle, (partitionId, (workerId, label, indices, values))
     val tmp: RDD[(Int, (Int, Array[LabeledPartDataPoint]))] = sc.textFile(path, minPartitions = num_partitions)
+//      .repartition(num_partitions) // this will increase the overhead.
       .mapPartitionsWithIndex(
       (workerId, iter) => {
         var start: Long = System.currentTimeMillis()
@@ -70,15 +71,14 @@ object MLUtils extends Logging {
         for(pid <- 0 until num_partitions){
           local_result(pid) = (pid, (workerId, new mutable.ArrayBuilder.ofRef[LabeledPartDataPoint]()))
         }
-        while(iter.hasNext){
+        while(iter.hasNext){  // iter.map() is a lazy one.
           val trim_line = iter.next().trim
           if(!(trim_line.isEmpty || trim_line.startsWith("#"))){
-            val data_point: (Int, Double, Array[Int], Array[Double]) = parseLibSVMRecord(workerId, trim_line)
-            // (partitionId, (workerId, label, indices, values))
-            val result: Array[(Int, (Int, Double, Array[Int], Array[Double]))] = splitDataPoint(data_point, num_partitions, num_features)
+            val result: Array[LabeledPartDataPoint] = splitLine(trim_line, num_partitions, num_features)
 
             for(pid <- 0 until(num_partitions)){
-              local_result(pid)._2._2 += LabeledPartDataPoint(result(pid)._2._2, new SparseVector(num_features, result(pid)._2._3, result(pid)._2._4))
+//              local_result(pid)._2._2 += LabeledPartDataPoint(result(pid)._2._2, new SparseVector(num_features, result(pid)._2._3, result(pid)._2._4))
+              local_result(pid)._2._2 += result(pid)
             }
           }
         }
@@ -98,6 +98,7 @@ object MLUtils extends Logging {
     val tmp2: RDD[(Int, Iterable[(Int, Array[LabeledPartDataPoint])])] = tmp.groupByKey(num_partitions)
     val xx: RDD[(Array[LabeledPartDataPoint])] = tmp2.mapPartitions(
       iter => {
+        var start = System.currentTimeMillis()
         val worker_iter: Iterator[(Int, Array[LabeledPartDataPoint])] = iter.next()._2.toIterator
 
         val xx: Array[Array[LabeledPartDataPoint]] = new Array[Array[LabeledPartDataPoint]](ini_worker_num)
@@ -109,10 +110,51 @@ object MLUtils extends Logging {
         for(wid <- 1 until xx.length){
           xx(0) ++= xx(wid)
         }
+        logInfo(s"ghand=combineArrays:${(System.currentTimeMillis() - start ) / 1000.0}")
         Iterator(xx(0))
       }
     )
     xx
+  }
+
+  def splitLine(line: String, num_partitions: Int, num_features: Int): Array[LabeledPartDataPoint] = {
+    val result: Array[LabeledPartDataPoint] = new Array[LabeledPartDataPoint](num_partitions)
+    val separator = " "
+
+    val indices_builders = new Array[ArrayBuilder[Int]](num_partitions)
+    val values_builders = new Array[ArrayBuilder[Double]](num_partitions)
+    for(pid <- 0 until(num_partitions)){
+      indices_builders(pid) = new ArrayBuilder.ofInt
+      values_builders(pid) = new ArrayBuilder.ofDouble
+    }
+    val splitted: Array[String] = line.split(separator)
+    val label: Double = splitted(0).toDouble
+
+    val worker_feature_num: Int = num_features / num_partitions + 1
+    var new_partition_id = -1
+    var new_feature_id = -1
+    for(idx <- 1 until(splitted.length)){
+      val tmp = splitted(idx).split(":")
+      val index = tmp(0).toInt
+      val value = tmp(1).toDouble
+
+      // range split
+//      new_partition_id = (index - 1) / worker_feature_num
+//      new_feature_id = index - new_partition_id * worker_feature_num
+
+      // hash split:
+      new_partition_id = index % num_partitions
+      new_feature_id = index / num_partitions
+
+      indices_builders(new_partition_id) += new_feature_id
+      values_builders(new_partition_id) += value
+    }
+
+    for(pid <- 0 until(num_partitions)){
+      result(pid) = LabeledPartDataPoint(label, new SparseVector(num_features, indices_builders(pid).result(), values_builders(pid).result()))
+    }
+
+    result
   }
 
   /**

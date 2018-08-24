@@ -20,10 +20,13 @@ object app{
     val sparkConf = new SparkConf().setAppName("FP-" + model_name)
     val sparkContext = new SparkContext(sparkConf)
 
+    val start_loading = System.currentTimeMillis()
     // RDD[Array[LabeledPartDataPoint]]
 //    val fp_rdd = MLUtils.loadLibSVMFileFeatureParallel(sparkContext, in_path, num_features, num_partitions)
     val fp_rdd = MLUtils.pipelineLoading(sparkContext, in_path, num_features, num_partitions)
     // not cached, to be cached in FPModel
+    fp_rdd.count()
+    System.out.println(s"ghand=loadingTime:${(System.currentTimeMillis() - start_loading)/1000.0}")
 
     val models: Array[String] = model_name.split("-")
     for(m <- models) {
