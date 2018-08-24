@@ -17,13 +17,15 @@
 
 package pku.mllibFP.util
 
+import org.apache.avro.SchemaBuilder
 import org.apache.spark.SparkContext
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.mllib.linalg._
 import org.apache.spark.rdd.RDD
 
-import scala.collection.mutable.ArrayBuilder
+import scala.collection.mutable
+import scala.collection.mutable.{ArrayBuffer, ArrayBuilder}
 
 
 /**
@@ -41,6 +43,78 @@ case class LabeledPartDataPoint(label: Double, features: Vector) {
   * Helper methods to load libsvm dataset and split them into feature parallel.
   */
 object MLUtils extends Logging {
+
+  /**
+    * pipelined loading libsvm dataset into feature parallel version
+    * @param sc
+    * @param path
+    * @param num_features
+    * @param num_partitions
+    * @return
+    */
+  def pipelineLoading(
+                     sc: SparkContext,
+                     path: String,
+                     num_features: Int,
+                     num_partitions: Int): RDD[Array[LabeledPartDataPoint]] = {
+
+    // for shuffle, (partitionId, (workerId, label, indices, values))
+    val tmp: RDD[(Int, (Int, Array[LabeledPartDataPoint]))] = sc.textFile(path, minPartitions = num_partitions)
+      .mapPartitionsWithIndex(
+      (workerId, iter) => {
+        var start: Long = System.currentTimeMillis()
+        // each partition is compiled into an local_result.
+        // (partitionId, (workerId, ArrayBuilder[LabeledDataPoint]))
+        val local_result: Array[(Int, (Int, mutable.ArrayBuilder[LabeledPartDataPoint]))] =
+          new Array[(Int, (Int, mutable.ArrayBuilder[LabeledPartDataPoint]))](num_partitions)
+        for(pid <- 0 until num_partitions){
+          local_result(pid) = (pid, (workerId, new mutable.ArrayBuilder.ofRef[LabeledPartDataPoint]()))
+        }
+        while(iter.hasNext){
+          val trim_line = iter.next().trim
+          if(!(trim_line.isEmpty || trim_line.startsWith("#"))){
+            val data_point: (Int, Double, Array[Int], Array[Double]) = parseLibSVMRecord(workerId, trim_line)
+            // (partitionId, (workerId, label, indices, values))
+            val result: Array[(Int, (Int, Double, Array[Int], Array[Double]))] = splitDataPoint(data_point, num_partitions, num_features)
+
+            for(pid <- 0 until(num_partitions)){
+              local_result(pid)._2._2 += LabeledPartDataPoint(result(pid)._2._2, new SparseVector(num_features, result(pid)._2._3, result(pid)._2._4))
+            }
+          }
+        }
+        logInfo(s"ghand=parseDataTime(s):${(System.currentTimeMillis() - start ) / 1000.0}, workerId:${workerId}")
+        start = System.currentTimeMillis()
+        val xx = local_result.map(
+          ele => (ele._1, (ele._2._1, ele._2._2.result()))
+        ).toIterator
+        logInfo(s"ghand=deepCopy(s):${(System.currentTimeMillis() - start ) / 1000.0}, workerId:${workerId}")
+
+        xx
+      }
+    )
+
+    // partitionId, Iterable(workerId, Array[LabeledPartDataPoint])
+    val ini_worker_num = tmp.partitions.length
+    val tmp2: RDD[(Int, Iterable[(Int, Array[LabeledPartDataPoint])])] = tmp.groupByKey(num_partitions)
+    val xx: RDD[(Array[LabeledPartDataPoint])] = tmp2.mapPartitions(
+      iter => {
+        val worker_iter: Iterator[(Int, Array[LabeledPartDataPoint])] = iter.next()._2.toIterator
+
+        val xx: Array[Array[LabeledPartDataPoint]] = new Array[Array[LabeledPartDataPoint]](ini_worker_num)
+        while(worker_iter.hasNext){
+          val tt = worker_iter.next()
+          xx(tt._1) = tt._2
+        }
+
+        for(wid <- 1 until xx.length){
+          xx(0) ++= xx(wid)
+        }
+        Iterator(xx(0))
+      }
+    )
+    xx
+  }
+
   /**
     * Loads labeled data in the LIBSVM format into an RDD[IndexedDataPoint].
     * The LIBSVM format is a text-based format used by LIBSVM and LIBLINEAR.
@@ -60,7 +134,7 @@ object MLUtils extends Logging {
                                      sc: SparkContext,
                                      path: String,
                                      num_features: Int,
-                                     num_partitions: Int): (RDD[Array[LabeledPartDataPoint]]) = {
+                                     num_partitions: Int): RDD[Array[LabeledPartDataPoint]] = {
     // local_data_id, label, indices, values
     val parsed: RDD[(Int, Double, Array[Int], Array[Double])] =
       parseLibSVMFile(sc, path, minPartitions = num_partitions)
@@ -164,10 +238,11 @@ object MLUtils extends Logging {
   /**
     * split one data point into ${num_partitions}, to be distributed over the cluster.
     * partitionByRange
-    * @param data_point     (globalDataId, label, indices, values)
+    * @param data_point     (idx, label, indices, values) // idx could be the workerId for this data point
+    *                       where it comes from, or globalDataId
     * @param num_partitions num_partitons vertically
     * @param num_features   total number of features
-    * @return (partitionId, (globalDataId, label, indices, values))
+    * @return Array[(partitionId, (idx, label, indices, values))]
     */
   def splitDataPoint(data_point: (Int, Double, Array[Int], Array[Double]), num_partitions: Int,
                  num_features: Int): Array[(Int, (Int, Double, Array[Int], Array[Double]))] = {
@@ -202,7 +277,7 @@ object MLUtils extends Logging {
       featureId += 1
     }
 
-    // (partitionId, (globalDataId, indices, values))
+    // (partitionId, (idx, indices, values))
     val result: Array[(Int, (Int, Double, Array[Int], Array[Double]))] =
       new Array[(Int, (Int, Double, Array[Int], Array[Double]))](num_partitions)
 
@@ -224,9 +299,9 @@ object MLUtils extends Logging {
     * @return
     */
    def parseLibSVMFile(
-                                      sc: SparkContext,
-                                      path: String,
-                                      minPartitions: Int): RDD[(Int, Double, Array[Int], Array[Double])] = {
+                        sc: SparkContext,
+                        path: String,
+                        minPartitions: Int): RDD[(Int, Double, Array[Int], Array[Double])] = {
     sc.textFile(path, minPartitions)
       .mapPartitions {
         var local_dataPoint_id: Int = -1
@@ -244,11 +319,13 @@ object MLUtils extends Logging {
   }
 
   /**
-    * @param localDataPointId , the index of the data point in this line.
+    * parse one line into a data point, with a idx as its identifier.
+    * @param idx , the index of the data point in this line; or the workerId of this line.
+    *            For different usage --- localDataId, or workerId
     * @param line             a data point in libsvm format
     * @return
     */
-  def parseLibSVMRecord(localDataPointId: Int, line: String): (Int, Double, Array[Int], Array[Double]) = {
+  def parseLibSVMRecord(idx: Int, line: String): (Int, Double, Array[Int], Array[Double]) = {
     val items = line.split(' ')
     val label = items.head.toDouble
     val (indices, values) = items.tail.filter(_.nonEmpty).map { item =>
@@ -270,7 +347,7 @@ object MLUtils extends Logging {
       previous = current
       i += 1
     }
-    (localDataPointId, label, indices, values)
+    (idx, label, indices, values)
   }
 
   /**

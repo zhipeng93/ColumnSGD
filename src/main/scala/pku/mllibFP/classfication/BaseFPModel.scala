@@ -182,7 +182,9 @@ abstract class BaseFPModel[T: ClassTag](@transient inputRDD: RDD[Array[LabeledPa
       }
       i += 1
     }
-    modelRDD.count()
+//    modelRDD.count()
+    logInfo(s"ghand=label-length:${labels.length}")
+
 
 
     var start_time = System.currentTimeMillis()

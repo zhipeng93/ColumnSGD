@@ -21,7 +21,8 @@ object app{
     val sparkContext = new SparkContext(sparkConf)
 
     // RDD[Array[LabeledPartDataPoint]]
-    val fp_rdd = MLUtils.loadLibSVMFileFeatureParallel(sparkContext, in_path, num_features, num_partitions)
+//    val fp_rdd = MLUtils.loadLibSVMFileFeatureParallel(sparkContext, in_path, num_features, num_partitions)
+    val fp_rdd = MLUtils.pipelineLoading(sparkContext, in_path, num_features, num_partitions)
     // not cached, to be cached in FPModel
 
     val models: Array[String] = model_name.split("-")
