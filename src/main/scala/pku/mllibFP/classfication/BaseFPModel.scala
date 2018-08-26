@@ -153,39 +153,34 @@ abstract class BaseFPModel[T: ClassTag](@transient inputRDD: RDD[Array[LabeledPa
 
 
   def miniBatchSGD(): Unit = {
+    val start_loading = System.currentTimeMillis()
     val modelRDD: RDD[(Array[LabeledPartDataPoint], Array[Array[Double]])] = generateModel(inputRDD)
     modelRDD.cache()
     modelRDD.setName("modelRDD")
 
     // collect labels to the driver
-    var labels: Array[Double] = null
-    val tmp: Array[Array[Double]] = modelRDD.mapPartitionsWithIndex(
+    val tmp: Array[(Int, Array[Double])] = modelRDD.mapPartitionsWithIndex(
       (pid, iter) =>{
-        if(pid == 0){
-          val iter_array: Array[LabeledPartDataPoint] = iter.next._1
-          val ll: Array[Double] = new Array[Double](iter_array.length)
-          var i = 0
-          while (i < ll.length){
-            ll(i) = iter_array(i).label
-            i += 1
-          }
-          Iterator(ll)
+        val iter_array: Array[LabeledPartDataPoint] = iter.next._1
+        val worker_feature_num = numFeatures / numPartitions + 1
+        val start = worker_feature_num * pid
+        val end = math.min(worker_feature_num + start, iter_array.length)
+        val ll: Array[Double] = new Array[Double](end - start)
+        for(idx <- 0 until ll.length){
+          ll(idx) = iter_array(start + idx).label
         }
-        else
-          Iterator(null)
+        Iterator((pid, ll))
       }
     ).collect()
-    var i = 0
-    while(i < tmp.length) {
-      if (tmp(i) != null){
-        labels = tmp(i)
-      }
-      i += 1
+    val orderedTmp: Array[Array[Double]] = new Array[Array[Double]](tmp.length)
+    for(idx <- 0 until(tmp.length)){
+      orderedTmp(tmp(idx)._1) = tmp(idx)._2
     }
-//    modelRDD.count()
-    logInfo(s"ghand=label-length:${labels.length}")
-
-
+    for(idx <- 0 until(tmp.length)){
+      orderedTmp(0) ++= orderedTmp(idx)
+    }
+    val labels = orderedTmp(0)
+    logInfo(s"ghand=loading:${(System.currentTimeMillis() - start_loading ) / 1000.0}")
 
     var start_time = System.currentTimeMillis()
     var iter_id: Int = 0

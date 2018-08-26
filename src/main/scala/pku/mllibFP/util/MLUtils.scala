@@ -18,14 +18,14 @@
 package pku.mllibFP.util
 
 import org.apache.avro.SchemaBuilder
-import org.apache.spark.SparkContext
+import org.apache.spark.{HashPartitioner, SparkContext, TaskContext}
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.mllib.linalg._
 import org.apache.spark.rdd.RDD
 
 import scala.collection.mutable
-import scala.collection.mutable.{ArrayBuffer, ArrayBuilder}
+import scala.collection.mutable.ArrayBuilder
 
 
 /**
@@ -44,15 +44,231 @@ case class LabeledPartDataPoint(label: Double, features: Vector) {
   */
 object MLUtils extends Logging {
 
+
+  def bulkBigArrayLoading(
+                         sc: SparkContext,
+                         path: String,
+                         num_features: Int,
+                         num_partitions: Int
+                         ): RDD[Array[LabeledPartDataPoint]] = {
+    // first organize each partition into num_partition big Arrays
+    // (pid, (workerId, indexEnd, labels, indices, values)
+    val tmp: RDD[(Int, (Int, Array[Int], Array[Double], Array[Int], Array[Double]))] = sc.textFile(path, minPartitions = num_partitions)
+      .map(_.trim)
+      .filter(line => !(line.isEmpty || line.startsWith("#")))
+      .mapPartitions(
+        iter => {
+          // eatract each line into ${num_partitions} REALLY LONG workSets
+          // each workSets contains one partitionId and four arrays,
+          // i.e., indexEnd[Int], labels[Double],  indices[Int], values[Doule]
+          val local_result: Array[(Int, (ArrayBuilder[Int], ArrayBuilder[Double],ArrayBuilder[Int], ArrayBuilder[Double]))] =
+          new Array[(Int, (ArrayBuilder[Int], ArrayBuilder[Double], ArrayBuilder[Int], ArrayBuilder[Double]))](num_partitions)
+
+          for(pid <- 0 until(num_partitions)) {
+            local_result(pid) =
+              (pid, (new mutable.ArrayBuilder.ofInt, new mutable.ArrayBuilder.ofDouble,
+                new mutable.ArrayBuilder.ofInt, new mutable.ArrayBuilder.ofDouble))
+            local_result(pid)._2._1.sizeHint(1000000)
+            // indexEnd for each data point.
+            // For example, for i-th data point, the range is [index_End(i-1), index_End(i))
+            local_result(pid)._2._2.sizeHint(1000000) // labels of each data point
+            local_result(pid)._2._3.sizeHint(10000000) // indices
+            local_result(pid)._2._4.sizeHint(10000000) // values
+          }
+
+          var xx: Array[Char] = null
+          val space: Char = ' '
+          val colon: Char = ':'
+          var label: Double = -1.0
+          var index: Int = -1
+          var value: Double = -1
+          val worker_feature_num: Int = num_features / num_partitions + 1
+          var new_partition_id = -1
+          var new_feature_id = -1
+          val last_index: Array[Int] = new Array[Int](num_partitions)
+          // last_index(pid): indexEnd for pid given this data point
+
+          while(iter.hasNext){  // iter.map() is a lazy one.
+            val trim_line = iter.next().trim
+            if(!(trim_line.isEmpty || trim_line.startsWith("#"))){
+              // deal with one line, and append all the results to localResults.
+              xx = trim_line.toCharArray
+
+              var lastPos = 0
+              var idx = 0
+              while(xx(idx) != space){
+                idx += 1
+              }
+              label = new String(xx, lastPos, idx - lastPos).toDouble
+              for(i <- 0 until num_partitions){
+                local_result(i)._2._2 += label
+              }
+
+              while(idx < xx.length){
+                // deal with (key, value)
+                lastPos = idx + 1
+                while(xx(idx) != colon){
+                  idx += 1
+                }
+                index = new String(xx, lastPos, idx - lastPos).toInt
+                lastPos = idx + 1
+                while(idx < xx.length && xx(idx) != space){
+                  idx += 1
+                }
+                value = new String(xx, lastPos, idx - lastPos).toDouble
+                lastPos = idx + 1
+
+                // range split
+                //      new_partition_id = (index - 1) / worker_feature_num
+                //      new_feature_id = index - new_partition_id * worker_feature_num
+
+                // hash split:
+                new_partition_id = index % num_partitions
+                new_feature_id = index / num_partitions
+                local_result(new_partition_id)._2._3 += new_feature_id
+                local_result(new_partition_id)._2._4 += value
+                last_index(new_partition_id) += 1
+
+              }
+              for(pid <- 0 until num_partitions){
+                local_result(pid)._2._1 += last_index(pid)
+              }
+            }
+          }
+          local_result.toIterator.map(
+            xx => {
+              (xx._1, (TaskContext.getPartitionId(), xx._2._1.result(), xx._2._2.result(), xx._2._3.result(), xx._2._4.result()))
+            }
+          )
+        }
+      )
+
+    val ini_worker_num = tmp.partitions.length
+
+    val result: RDD[Array[LabeledPartDataPoint]] = tmp.partitionBy(new HashPartitioner(num_partitions)).mapPartitions(
+      iter => {
+        val xx: Array[(Int, Array[Int], Array[Double], Array[Int], Array[Double])] =
+          new Array[(Int, Array[Int], Array[Double], Array[Int], Array[Double])](ini_worker_num)
+        while(iter.hasNext){
+          val tt = iter.next()
+          xx(tt._2._1) = tt._2
+        }
+        // restore the arrays into Array[LabeledPartDataPoint]
+        var num_data_points = 0
+        for(wid <- 0 until ini_worker_num){
+          num_data_points += xx(wid)._3.length
+        }
+        logInfo(s"ghand=number of data points is: ${num_data_points}")
+        val result: Array[LabeledPartDataPoint] = new Array[LabeledPartDataPoint](num_data_points)
+        var gdid = 0 // global data id
+        var startIndexId = -1
+        var endIndexId = -1
+        for(wid <- 0 until ini_worker_num){
+          // deal with one part from the initial worker
+          val last_index: Array[Int] = xx(wid)._2
+          val labels: Array[Double] = xx(wid)._3
+          val indices: Array[Int] = xx(wid)._4
+          val values: Array[Double] = xx(wid)._5
+          startIndexId = 0
+          endIndexId = last_index(0)
+          result(gdid) = LabeledPartDataPoint(labels(0),
+            new SparseVector(num_features,
+              indices.slice(startIndexId, endIndexId),
+              values.slice(startIndexId, endIndexId)))
+          gdid += 1
+          for(ldid <- 1 until last_index.length){ // local data id
+            // start: 1
+            startIndexId = last_index(ldid - 1)
+            endIndexId = last_index(ldid)
+            result(gdid) = LabeledPartDataPoint(labels(ldid),
+              new SparseVector(num_features,
+                indices.slice(startIndexId, endIndexId),
+                values.slice(startIndexId, endIndexId)))
+            gdid += 1
+          }
+        }
+        Iterator(result)
+      }
+    )
+    result
+  }
+
+  def bulkRepartitionLoading(
+                           sc: SparkContext,
+                           path: String,
+                           num_features: Int,
+                           num_partitions: Int): RDD[Array[LabeledPartDataPoint]] = {
+
+    // for shuffle, (partitionId, (workerId, label, indices, values))
+    val tmp: RDD[(Int, (Int, Array[LabeledPartDataPoint]))] = sc.textFile(path, minPartitions = num_partitions)
+      //      .repartition(num_partitions) // this will increase the overhead.
+      .mapPartitionsWithIndex(
+      (workerId, iter) => {
+        var start: Long = System.currentTimeMillis()
+        // each partition is compiled into an local_result.
+        // (partitionId, (workerId, ArrayBuilder[LabeledDataPoint]))
+        val local_result: Array[(Int, (Int, mutable.ArrayBuilder[LabeledPartDataPoint]))] =
+        new Array[(Int, (Int, mutable.ArrayBuilder[LabeledPartDataPoint]))](num_partitions)
+        for(pid <- 0 until num_partitions){
+          local_result(pid) = (pid, (workerId, new mutable.ArrayBuilder.ofRef[LabeledPartDataPoint]()))
+          local_result(pid)._2._2.sizeHint(10000000)
+        }
+        while(iter.hasNext){  // iter.map() is a lazy one.
+          val trim_line = iter.next().trim
+          if(!(trim_line.isEmpty || trim_line.startsWith("#"))){
+            val result: Array[LabeledPartDataPoint] = splitLine(trim_line, num_partitions, num_features)
+
+            for(pid <- 0 until(num_partitions)){
+              local_result(pid)._2._2 += result(pid)
+            }
+          }
+        }
+        logInfo(s"ghand=parseDataTime(s):${(System.currentTimeMillis() - start ) / 1000.0}, workerId:${workerId}")
+        start = System.currentTimeMillis()
+        val xx = local_result.map(
+          ele => (ele._1, (ele._2._1, ele._2._2.result()))
+        ).toIterator
+        logInfo(s"ghand=deepCopy(s):${(System.currentTimeMillis() - start ) / 1000.0}, workerId:${workerId}")
+
+        xx
+      }
+    )
+
+    // partitionId, Iterable(workerId, Array[LabeledPartDataPoint])
+    val ini_worker_num = tmp.partitions.length
+    val tmp2: RDD[(Int, (Int, Array[LabeledPartDataPoint]))] = tmp.partitionBy(new HashPartitioner(num_partitions))
+    // this shuffle takes too long time, start --> mapPartitionWithIndex done, 23s,  however, start --> groupByKey, 70s.
+
+    val xx: RDD[(Array[LabeledPartDataPoint])] = tmp2.mapPartitions(
+      iter => {
+        var start = System.currentTimeMillis()
+        val xx: Array[Array[LabeledPartDataPoint]] = new Array[Array[LabeledPartDataPoint]](ini_worker_num)
+        while(iter.hasNext){
+          val tt = iter.next()
+          xx(tt._2._1) = tt._2._2
+        }
+
+        for(wid <- 1 until xx.length){
+          xx(0) ++= xx(wid)
+        }
+        logInfo(s"ghand=combineArrays:${(System.currentTimeMillis() - start ) / 1000.0}")
+        Iterator(xx(0))
+      }
+    )
+    xx
+  }
+
   /**
-    * pipelined loading libsvm dataset into feature parallel version
+    * bulkPipelineLoading loading libsvm dataset into feature parallel version
+    * groupByKey: the elements that are grouped by are Arrays. Which is a big one and the pipelined cannot hide the
+    * time of dealing with data.
     * @param sc
     * @param path
     * @param num_features
     * @param num_partitions
     * @return
     */
-  def pipelineLoading(
+  def bulkGroupByLoading(
                      sc: SparkContext,
                      path: String,
                      num_features: Int,
@@ -77,7 +293,6 @@ object MLUtils extends Logging {
             val result: Array[LabeledPartDataPoint] = splitLine(trim_line, num_partitions, num_features)
 
             for(pid <- 0 until(num_partitions)){
-//              local_result(pid)._2._2 += LabeledPartDataPoint(result(pid)._2._2, new SparseVector(num_features, result(pid)._2._3, result(pid)._2._4))
               local_result(pid)._2._2 += result(pid)
             }
           }
@@ -96,6 +311,8 @@ object MLUtils extends Logging {
     // partitionId, Iterable(workerId, Array[LabeledPartDataPoint])
     val ini_worker_num = tmp.partitions.length
     val tmp2: RDD[(Int, Iterable[(Int, Array[LabeledPartDataPoint])])] = tmp.groupByKey(num_partitions)
+    // this shuffle takes too long time, start --> mapPartitionWithIndex done, 23s,  however, start --> groupByKey, 70s.
+
     val xx: RDD[(Array[LabeledPartDataPoint])] = tmp2.mapPartitions(
       iter => {
         var start = System.currentTimeMillis()
@@ -117,6 +334,118 @@ object MLUtils extends Logging {
     xx
   }
 
+  /**
+    * stream shuffle, groupByKey on each data point utilizing the order of streaming in each partition.
+    * @param sc
+    * @param path
+    * @param num_features
+    * @param num_partitions
+    * @return
+    */
+  def pipeLineRepartitionLoading(
+                       sc: SparkContext,
+                       path: String,
+                       num_features: Int,
+                       num_partitions: Int): RDD[Array[LabeledPartDataPoint]] = {
+
+    // for shuffle, (partitionId, (workerId, label, indices, values))
+    val tmp: RDD[(Int, (Int, LabeledPartDataPoint))] = sc.textFile(path, minPartitions = num_partitions)
+      .map(_.trim)
+      .filter(line => !(line.isEmpty || line.startsWith("#")))
+      .map(
+        line => {
+          val xx: Array[LabeledPartDataPoint] = splitLine(line, num_partitions, num_features)
+          var pid = -1
+          val yy: Iterator[(Int, (Int, LabeledPartDataPoint))] = xx.toIterator.map(lpd =>
+            {
+              pid += 1
+              (pid, (TaskContext.getPartitionId(), lpd))
+            }
+          )
+          yy
+        }
+      ).flatMap(x => x)
+
+    val ini_num_partitons = tmp.partitions.length
+
+    val tt: RDD[(Int, (Int, LabeledPartDataPoint))] =
+//      new ShuffledRDD[Int, (Int, LabeledPartDataPoint), (Int, LabeledPartDataPoint)](tmp, new HashPartitioner(num_partitions))
+      tmp.partitionBy(new HashPartitioner(num_partitions))
+
+    tt.mapPartitions(
+      iter => {
+        val dataPoints: Array[mutable.ArrayBuilder[LabeledPartDataPoint]] =
+          new Array[mutable.ArrayBuilder[LabeledPartDataPoint]](ini_num_partitons)
+        for(pid <-0 until ini_num_partitons) {
+          dataPoints(pid) = new mutable.ArrayBuilder.ofRef[LabeledPartDataPoint]()
+          dataPoints(pid).sizeHint(10000000)
+        }
+
+        while(iter.hasNext) {
+          val ele = iter.next()
+          val wid = ele._2._1
+          val lpd = ele._2._2
+          dataPoints(wid) += lpd
+        }
+
+        for(pid <- 1 until(ini_num_partitons))
+          dataPoints(0) ++= dataPoints(pid).result()
+
+        Iterator(dataPoints(0).result())
+      }
+    )
+  }
+
+  def pipelineGroupByLoading(
+                       sc: SparkContext,
+                       path: String,
+                       num_features: Int,
+                       num_partitions: Int): RDD[Array[LabeledPartDataPoint]] = {
+
+    // for shuffle, (partitionId, (workerId, label, indices, values))
+    val tmp: RDD[(Int, (Int, LabeledPartDataPoint))] = sc.textFile(path, minPartitions = num_partitions)
+      .map(_.trim)
+      .filter(line => !(line.isEmpty || line.startsWith("#")))
+      .map(
+        line => {
+          val xx: Array[LabeledPartDataPoint] = splitLine(line, num_partitions, num_features)
+          var pid = -1
+          val yy: Iterator[(Int, (Int, LabeledPartDataPoint))] = xx.toIterator.map(lpd =>
+          {
+            pid += 1
+            (pid, (TaskContext.getPartitionId(), lpd))
+          }
+          )
+          yy
+        }
+      ).flatMap(x => x)
+
+    val ini_num_partitons = tmp.partitions.length
+    val result: RDD[Array[LabeledPartDataPoint]] = tmp.groupByKey(num_partitions).mapPartitions(
+      iter => {
+        val dataPoints: Array[mutable.ArrayBuilder[LabeledPartDataPoint]] =
+          new Array[mutable.ArrayBuilder[LabeledPartDataPoint]](ini_num_partitons)
+        for(pid <-0 until ini_num_partitons) {
+          dataPoints(pid) = new mutable.ArrayBuilder.ofRef[LabeledPartDataPoint]()
+          dataPoints(pid).sizeHint(10000000)
+        }
+        val iter_data: Iterator[(Int, LabeledPartDataPoint)] = iter.next()._2.toIterator
+        while(iter_data.hasNext){
+          val tmp = iter_data.next()
+          dataPoints(tmp._1) += tmp._2
+        }
+
+        for(pid <- 1 until(ini_num_partitons))
+          dataPoints(0) ++= dataPoints(pid).result()
+
+        Iterator(dataPoints(0).result())
+      }
+
+    )
+    result
+  }
+
+
   def splitLine(line: String, num_partitions: Int, num_features: Int): Array[LabeledPartDataPoint] = {
     val result: Array[LabeledPartDataPoint] = new Array[LabeledPartDataPoint](num_partitions)
     val separator = " "
@@ -127,16 +456,58 @@ object MLUtils extends Logging {
       indices_builders(pid) = new ArrayBuilder.ofInt
       values_builders(pid) = new ArrayBuilder.ofDouble
     }
-    val splitted: Array[String] = line.split(separator)
-    val label: Double = splitted(0).toDouble
-
+//    val splitted: Array[String] = line.split(separator)
+//    val label: Double = splitted(0).toDouble
+//
+//    val worker_feature_num: Int = num_features / num_partitions + 1
+//    var new_partition_id = -1
+//    var new_feature_id = -1
+//    for(idx <- 1 until(splitted.length)){
+//      val tmp = splitted(idx).split(":")
+//      val index = tmp(0).toInt
+//      val value = tmp(1).toDouble
+//
+//      // range split
+////      new_partition_id = (index - 1) / worker_feature_num
+////      new_feature_id = index - new_partition_id * worker_feature_num
+//
+//      // hash split:
+//      new_partition_id = index % num_partitions
+//      new_feature_id = index / num_partitions
+//
+//      indices_builders(new_partition_id) += new_feature_id
+//      values_builders(new_partition_id) += value
+//    }
+    val xx: Array[Char] = line.toCharArray
+    val space: Char = ' '
+    val colon: Char = ':'
+    var lastPos = 0
+    var label: Double = -1.0
+    var index: Int = -1
+    var value: Double = -1
     val worker_feature_num: Int = num_features / num_partitions + 1
     var new_partition_id = -1
     var new_feature_id = -1
-    for(idx <- 1 until(splitted.length)){
-      val tmp = splitted(idx).split(":")
-      val index = tmp(0).toInt
-      val value = tmp(1).toDouble
+
+    lastPos = 0
+    var idx = 0
+    while(xx(idx) != space){
+      idx += 1
+    }
+    label = new String(xx, lastPos, idx - lastPos).toDouble
+    while(idx < xx.length){
+      // deal with (key, value)
+      lastPos = idx + 1
+      while(xx(idx) != colon){
+        idx += 1
+      }
+      index = new String(xx, lastPos, idx - lastPos).toInt
+      lastPos = idx + 1
+      while(idx < xx.length && xx(idx) != space){
+        idx += 1
+      }
+      value = new String(xx, lastPos, idx - lastPos).toDouble
+      lastPos = idx + 1
 
       // range split
 //      new_partition_id = (index - 1) / worker_feature_num

@@ -34,7 +34,6 @@ object MLlibApp{
     data_rdd.count()
     System.out.println(s"ghand=loadingTime:${(System.currentTimeMillis() - start_loading)/1000.0}")
 
-
     val models: Array[String] = model_name.split("-")
     for(m <- models) {
       m match {
