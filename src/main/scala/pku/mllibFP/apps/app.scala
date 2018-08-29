@@ -2,7 +2,7 @@ package pku.mllibFP.apps
 
 import org.apache.spark.{SparkConf, SparkContext}
 import pku.mllibFP.util.MLUtils
-import pku.mllibFP.classfication.{LR, SVM, MLR, FM}
+import pku.mllibFP.classfication._
 
 object app{
   def main(args: Array[String]): Unit ={
@@ -21,7 +21,6 @@ object app{
     val sparkContext = new SparkContext(sparkConf)
 
     // RDD[Array[LabeledPartDataPoint]]
-//    val fp_rdd = MLUtils.loadLibSVMFileFeatureParallel(sparkContext, in_path, num_features, num_partitions)
     val fp_rdd = MLUtils.bulkBigArrayLoading(sparkContext, in_path, num_features, num_partitions)
     // not cached, to be cached in FPModel
 
@@ -38,6 +37,22 @@ object app{
             miniBatchSize = mini_batch_size).miniBatchSGD()
         case "LR" =>
           new LR(inputRDD = fp_rdd,
+            numFeatures = num_features,
+            numPartitions = num_partitions,
+            regParam = reg_para,
+            stepSize = step_size,
+            numIterations = num_iteration,
+            miniBatchSize = mini_batch_size).miniBatchSGD()
+        case "ADAMSVM" =>
+          new AdamSVM(inputRDD = fp_rdd,
+            numFeatures = num_features,
+            numPartitions = num_partitions,
+            regParam = reg_para,
+            stepSize = step_size,
+            numIterations = num_iteration,
+            miniBatchSize = mini_batch_size).miniBatchSGD()
+        case "ADAMLR" =>
+          new AdamLR(inputRDD = fp_rdd,
             numFeatures = num_features,
             numPartitions = num_partitions,
             regParam = reg_para,

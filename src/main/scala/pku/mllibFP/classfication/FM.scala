@@ -94,7 +94,7 @@ class FM(@transient inputRDD: RDD[Array[LabeledPartDataPoint]],
 
 
   override def updateModel(model: Array[Array[Double]], data_points: Array[LabeledPartDataPoint],
-                           interResults: Array[Array[Double]], last_seed: Int): Unit ={
+                           interResults: Array[Array[Double]], last_seed: Int, iterationId: Int): Unit ={
     val rand = new Random(last_seed)
     // update the model
     val num_data_points = data_points.length

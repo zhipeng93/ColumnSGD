@@ -77,7 +77,7 @@ class MLR(@transient inputRDD: RDD[Array[LabeledPartDataPoint]],
 
 
   override def updateModel(model: Array[Array[Double]], data_points: Array[LabeledPartDataPoint],
-                           interResults: Array[Array[Double]], last_seed: Int): Unit ={
+                           interResults: Array[Array[Double]], last_seed: Int, iterationId: Int): Unit ={
     val rand = new Random(last_seed)
     // calculte the norm
     val norm: Array[Double] = new Array[Double](miniBatchSize)

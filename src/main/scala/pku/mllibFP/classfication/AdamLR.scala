@@ -1,5 +1,6 @@
 package pku.mllibFP.classfication
 
+import org.apache.spark.SparkEnv
 import org.apache.spark.mllib.linalg.{DenseVector, SparseVector}
 import pku.mllibFP.util.{ColumnMLDenseVectorException, LabeledPartDataPoint, MLUtils}
 import org.apache.spark.rdd.RDD
@@ -19,7 +20,7 @@ import scala.util.Random
   * @param miniBatchSize
   */
 
-class LR(@transient inputRDD: RDD[Array[LabeledPartDataPoint]],
+class AdamLR(@transient inputRDD: RDD[Array[LabeledPartDataPoint]],
          numFeatures: Int,
          numPartitions: Int,
          regParam: Double,
@@ -36,7 +37,7 @@ class LR(@transient inputRDD: RDD[Array[LabeledPartDataPoint]],
     // generate model
     inputRDD.mapPartitions {
       iter => {
-        val model: Array[Array[Double]] = Array.ofDim[Double](1, numFeatures / numPartitions + 1)
+        val model: Array[Array[Double]] = Array.ofDim[Double](3, numFeatures / numPartitions + 1)
         Iterator((iter.next(), model))
       }
     }
@@ -87,6 +88,9 @@ class LR(@transient inputRDD: RDD[Array[LabeledPartDataPoint]],
     val rand = new Random(last_seed)
     val num_data_points = data_points.length
 
+    val epsilon = SparkEnv.get.conf.getDouble("spark.ml.sgd.adam.epsilon", 1e-7)
+    val beta1 = SparkEnv.get.conf.getDouble("spark.ml.sgd.adam.beta1", 0.9)
+    val beta2 = SparkEnv.get.conf.getDouble("spark.ml.sgd.adam.beta2", 0.99)
     val gradient: Array[Double] = new Array[Double](model(0).length)
 
     for (id_batch <- 0 until miniBatchSize) {
@@ -107,8 +111,16 @@ class LR(@transient inputRDD: RDD[Array[LabeledPartDataPoint]],
         }
       }
     }
-    for(iid <- 0 until(model(0).length)){
-      model(0)(iid) -= stepSize * gradient(iid) / miniBatchSize
+    val m_bias = 1 - math.pow(beta1, iterationId + 1)
+    val v_bias = 1 - math.pow(beta2, iterationId + 1)
+    for(id <- 0 until gradient.length){
+      if(gradient(id) != 0) {
+        gradient(id) /= miniBatchSize // normalize
+        model(1)(id) = beta1 * model(1)(id) + (1 - beta1) * gradient(id) // momentum
+        model(2)(id) = beta2 * model(2)(id) + (1 - beta2) * gradient(id) * gradient(id) // v
+
+        model(0)(id) -= stepSize / (math.sqrt(model(2)(id) / v_bias) + epsilon) * model(1)(id) / m_bias
+      }
     }
   }
 

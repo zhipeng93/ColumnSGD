@@ -1,18 +1,19 @@
 package pku.mllibFP.classfication
 
+import org.apache.spark.SparkEnv
 import org.apache.spark.mllib.linalg.{DenseVector, SparseVector}
 import pku.mllibFP.util.{ColumnMLDenseVectorException, LabeledPartDataPoint, MLUtils}
 import org.apache.spark.rdd.RDD
 
 import scala.util.Random
 
-class SVM(@transient inputRDD: RDD[Array[LabeledPartDataPoint]],
+class AdamSVM(@transient inputRDD: RDD[Array[LabeledPartDataPoint]],
           numFeatures: Int,
           numPartitions: Int,
           regParam: Double,
           stepSize: Double,
           numIterations: Int,
-          miniBatchSize: Int) extends BaseFPModel(inputRDD, numFeatures, numPartitions,
+          miniBatchSize: Int) extends SVM(inputRDD, numFeatures, numPartitions,
   regParam, stepSize, numIterations, miniBatchSize) {
 
 
@@ -23,7 +24,8 @@ class SVM(@transient inputRDD: RDD[Array[LabeledPartDataPoint]],
     // generate model
     inputRDD.mapPartitions{
       iter => {
-        val model: Array[Array[Double]] = Array.ofDim[Double](1, numFeatures / numPartitions + 1)
+        // model contains the model, expectation_g2 and velocity.
+        val model: Array[Array[Double]] = Array.ofDim[Double](3, numFeatures / numPartitions + 1)
         Iterator((iter.next(), model))
       }
     }
@@ -75,13 +77,18 @@ class SVM(@transient inputRDD: RDD[Array[LabeledPartDataPoint]],
     val rand = new Random(last_seed)
     val num_data_points = data_points.length
 
+    val epsilon = SparkEnv.get.conf.getDouble("spark.ml.sgd.adam.epsilon", 1e-7)
+    val beta1 = SparkEnv.get.conf.getDouble("spark.ml.sgd.adam.beta1", 0.9)
+    val beta2 = SparkEnv.get.conf.getDouble("spark.ml.sgd.adam.beta2", 0.99)
+    // gradient = -y_i * x if
+
     val gradient: Array[Double] = new Array[Double](model(0).length) // dimension of the local model.
 
     for(id_batch <- 0 until miniBatchSize){
       val id_global = rand.nextInt(num_data_points)
       val tmp_data_point = data_points(id_global)
       val label_scaled = 2 * tmp_data_point.label - 1
-      val margin = label_scaled * interResults(0){id_batch}
+      val margin = label_scaled * interResults(0)(id_batch)
       if(margin < 1){
         // update model
         val coeff = -label_scaled
@@ -102,8 +109,17 @@ class SVM(@transient inputRDD: RDD[Array[LabeledPartDataPoint]],
         // do nothing
       }
     }
-    for(iid <- 0 until(model(0).length)){
-      model(0)(iid) -= stepSize * gradient(iid) / miniBatchSize
+
+    val m_bias = 1 - math.pow(beta1, iterationId + 1)
+    val v_bias = 1 - math.pow(beta2, iterationId + 1)
+    for(id <- 0 until gradient.length){
+      if(gradient(id) != 0) {
+        gradient(id) /= miniBatchSize // normalize
+        model(1)(id) = beta1 * model(1)(id) + (1 - beta1) * gradient(id) // momentum
+        model(2)(id) = beta2 * model(2)(id) + (1 - beta2) * gradient(id) * gradient(id) // v
+
+        model(0)(id) -= stepSize / (math.sqrt(model(2)(id) / v_bias) + epsilon) * model(1)(id) / m_bias
+      }
     }
 
   }
