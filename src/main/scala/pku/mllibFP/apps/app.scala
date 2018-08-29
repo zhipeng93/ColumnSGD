@@ -20,7 +20,7 @@ object app{
     val sparkConf = new SparkConf().setAppName("FP-" + model_name)
     val sparkContext = new SparkContext(sparkConf)
 
-    // RDD[Array[LabeledPartDataPoint]]
+    // RDD[WorkSet]
     val fp_rdd = MLUtils.bulkBigArrayLoading(sparkContext, in_path, num_features, num_partitions)
     // not cached, to be cached in FPModel
 

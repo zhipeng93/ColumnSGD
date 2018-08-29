@@ -1,23 +1,23 @@
 package pku.mllibFP.classfication
 
 import org.apache.spark.mllib.linalg.{DenseVector, SparseVector, Vector}
-import pku.mllibFP.util.{ColumnMLDenseVectorException, LabeledPartDataPoint, MLUtils}
+import pku.mllibFP.util.{ColumnMLDenseVectorException, LabeledPartDataPoint, MLUtils, WorkSet}
 import org.apache.spark.rdd.RDD
 
 import scala.util.Random
 
-class FM(@transient inputRDD: RDD[Array[LabeledPartDataPoint]],
-          numFeatures: Int,
-          numPartitions: Int,
-          regParam: Double,
-          stepSize: Double,
-          numIterations: Int,
-          miniBatchSize: Int,
-          modelK: Int) extends BaseFPModel(inputRDD, numFeatures, numPartitions,
+class FM(@transient inputRDD: RDD[WorkSet],
+         numFeatures: Int,
+         numPartitions: Int,
+         regParam: Double,
+         stepSize: Double,
+         numIterations: Int,
+         miniBatchSize: Int,
+         modelK: Int) extends BaseFPModel(inputRDD, numFeatures, numPartitions,
   regParam, stepSize, numIterations, miniBatchSize) {
 
 
-  override def generateModel(inputRDD: RDD[Array[LabeledPartDataPoint]]): RDD[(Array[LabeledPartDataPoint],
+  override def generateModel(inputRDD: RDD[WorkSet]): RDD[(WorkSet,
     Array[Array[Double]])] = {
     // dotProduct = sum_i (w_i * x_i + 0.5 * \sum_f (v_{if}^2 * x_i^2)), S_f  = V_f * x
     intermediateResults = Array.ofDim[Double](modelK + 1, miniBatchSize)
@@ -38,16 +38,16 @@ class FM(@transient inputRDD: RDD[Array[LabeledPartDataPoint]],
   }
 
 
-  override def computeInterResults(model: Array[Array[Double]], data_points: Array[LabeledPartDataPoint],
+  override def computeInterResults(model: Array[Array[Double]], workSet: WorkSet,
                                    new_seed: Int): Array[Array[Double]] = {
     // first line: w*x, next k line: S_f, next k line: G_f
     val result: Array[Array[Double]] = Array.ofDim[Double](modelK + 1, miniBatchSize)
 
     val rand = new Random(new_seed)
-    val num_data_points = data_points.length
+    val num_data_points = workSet.getNumDataPoints()
     for(id_batch <- 0 until miniBatchSize){
       val id_global = rand.nextInt(num_data_points)
-      data_points(id_global).features match {
+      workSet.getLabeledPartDataPoint(id_global).features match {
         case sp: SparseVector => {
           val indices = sp.indices
           val values = sp.values
@@ -93,14 +93,14 @@ class FM(@transient inputRDD: RDD[Array[LabeledPartDataPoint]],
   }
 
 
-  override def updateModel(model: Array[Array[Double]], data_points: Array[LabeledPartDataPoint],
+  override def updateModel(model: Array[Array[Double]], workSet: WorkSet,
                            interResults: Array[Array[Double]], last_seed: Int, iterationId: Int): Unit ={
     val rand = new Random(last_seed)
     // update the model
-    val num_data_points = data_points.length
+    val num_data_points = workSet.getNumDataPoints()
     for(id_batch <- 0 until miniBatchSize){
       val id_global = rand.nextInt(num_data_points)
-      val tmp_data_point = data_points(id_global)
+      val tmp_data_point = workSet.getLabeledPartDataPoint(id_global)
       // use one data point to update the model (k sub-models)
       tmp_data_point.features match {
         case sp: SparseVector => {

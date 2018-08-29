@@ -1,12 +1,12 @@
 package pku.mllibFP.classfication
 
 import org.apache.spark.mllib.linalg.{DenseVector, SparseVector, Vector}
-import pku.mllibFP.util.{ColumnMLDenseVectorException, LabeledPartDataPoint, MLUtils}
+import pku.mllibFP.util.{ColumnMLDenseVectorException, LabeledPartDataPoint, MLUtils, WorkSet}
 import org.apache.spark.rdd.RDD
 
 import scala.util.Random
 
-class MLR(@transient inputRDD: RDD[Array[LabeledPartDataPoint]],
+class MLR(@transient inputRDD: RDD[WorkSet],
           numFeatures: Int,
           numPartitions: Int,
           regParam: Double,
@@ -17,7 +17,7 @@ class MLR(@transient inputRDD: RDD[Array[LabeledPartDataPoint]],
   regParam, stepSize, numIterations, miniBatchSize) {
 
 
-  override def generateModel(inputRDD: RDD[Array[LabeledPartDataPoint]]): RDD[(Array[LabeledPartDataPoint],
+  override def generateModel(inputRDD: RDD[WorkSet]): RDD[(WorkSet,
     Array[Array[Double]])] = {
     // initialize intermediate results
     intermediateResults = Array.ofDim[Double](modelK, miniBatchSize)
@@ -31,14 +31,14 @@ class MLR(@transient inputRDD: RDD[Array[LabeledPartDataPoint]],
   }
 
 
-  override def computeInterResults(model: Array[Array[Double]], data_points: Array[LabeledPartDataPoint],
+  override def computeInterResults(model: Array[Array[Double]], workSet: WorkSet,
                                    new_seed: Int): Array[Array[Double]] = {
     val result: Array[Array[Double]] = Array.ofDim[Double](modelK, miniBatchSize)
     val rand = new Random(new_seed)
-    val num_data_points = data_points.length
+    val num_data_points = workSet.getNumDataPoints()
     for(id_batch <- 0 until miniBatchSize){
       val id_global = rand.nextInt(num_data_points)
-      data_points(id_global).features match {
+      workSet.getLabeledPartDataPoint(id_global).features match {
         case sp: SparseVector => {
           val indices = sp.indices
           val values = sp.values
@@ -76,7 +76,7 @@ class MLR(@transient inputRDD: RDD[Array[LabeledPartDataPoint]],
   }
 
 
-  override def updateModel(model: Array[Array[Double]], data_points: Array[LabeledPartDataPoint],
+  override def updateModel(model: Array[Array[Double]], workSet: WorkSet,
                            interResults: Array[Array[Double]], last_seed: Int, iterationId: Int): Unit ={
     val rand = new Random(last_seed)
     // calculte the norm
@@ -87,10 +87,10 @@ class MLR(@transient inputRDD: RDD[Array[LabeledPartDataPoint]],
       }
     }
     // update the model
-    val num_data_points = data_points.length
+    val num_data_points = workSet.getNumDataPoints()
     for(id_batch <- 0 until miniBatchSize){
       val id_global = rand.nextInt(num_data_points)
-      val tmp_data_point = data_points(id_global)
+      val tmp_data_point = workSet.getLabeledPartDataPoint(id_global)
       val label = tmp_data_point.label
       // use one data point to update the model (k sub-models)
       tmp_data_point.features match {

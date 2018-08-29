@@ -17,7 +17,6 @@
 
 package pku.mllibFP.util
 
-import org.apache.avro.SchemaBuilder
 import org.apache.spark.{HashPartitioner, SparkContext, TaskContext}
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
@@ -26,18 +25,6 @@ import org.apache.spark.rdd.RDD
 
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuilder
-
-
-/**
-  * @param label   label for each data points, could be a [Double]
-  * @param features features can be a SparseVector or DenseVector. Here the feature should be part of the
-  *                 whole features.
-  */
-case class LabeledPartDataPoint(label: Double, features: Vector) {
-  override def toString: String = {
-    s"($label, $features)"
-  }
-}
 
 /**
   * Helper methods to load libsvm dataset and split them into feature parallel.
@@ -50,10 +37,10 @@ object MLUtils extends Logging {
                          path: String,
                          num_features: Int,
                          num_partitions: Int
-                         ): RDD[Array[LabeledPartDataPoint]] = {
+                         ): RDD[WorkSet] = {
     // first organize each partition into num_partition big Arrays
     // (pid, (workerId, indexEnd, labels, indices, values)
-    val tmp: RDD[(Int, (Int, Array[Int], Array[Double], Array[Int], Array[Double]))] = sc.textFile(path, minPartitions = num_partitions)
+    val tmp: RDD[(Int, (Int, CSRWorkSet))] = sc.textFile(path, minPartitions = num_partitions)
       .map(_.trim)
       .filter(line => !(line.isEmpty || line.startsWith("#")))
       .mapPartitions(
@@ -138,7 +125,9 @@ object MLUtils extends Logging {
           local_result.toIterator.map(
             xx => {
               // partitionId, indexEnd[Int], labels[Double],  indices[Int], values[Doule]
-              (xx._1, (TaskContext.getPartitionId(), xx._2._1.result(), xx._2._2.result(), xx._2._3.result(), xx._2._4.result()))
+              (xx._1, (TaskContext.getPartitionId(),
+                new CSRWorkSet(xx._2._1.result, xx._2._2.result, xx._2._3.result, xx._2._4.result)
+              ))
             }
           )
         }
@@ -146,49 +135,23 @@ object MLUtils extends Logging {
 
     val ini_worker_num = tmp.partitions.length
 
-    val result: RDD[Array[LabeledPartDataPoint]] = tmp.partitionBy(new HashPartitioner(num_partitions)).mapPartitions(
+    val result: RDD[WorkSet] = tmp.partitionBy(new HashPartitioner(num_partitions)).mapPartitions(
       iter => {
-        val xx: Array[(Int, Array[Int], Array[Double], Array[Int], Array[Double])] =
-          new Array[(Int, Array[Int], Array[Double], Array[Int], Array[Double])](ini_worker_num)
+        // (pid, workset)
+        val xx: Array[CSRWorkSet] =
+          new Array[CSRWorkSet](ini_worker_num)
         while(iter.hasNext){
           val tt = iter.next()
-          xx(tt._2._1) = tt._2
+          xx(tt._2._1) = tt._2._2
         }
-        // restore the arrays into Array[LabeledPartDataPoint]
+
         var num_data_points = 0
         for(wid <- 0 until ini_worker_num){
-          num_data_points += xx(wid)._3.length
+          num_data_points += xx(wid).getNumDataPoints()
         }
         logInfo(s"ghand=number of data points is: ${num_data_points}")
-        val result: Array[LabeledPartDataPoint] = new Array[LabeledPartDataPoint](num_data_points)
-        var gdid = 0 // global data id
-        var startIndexId = -1
-        var endIndexId = -1
-        for(wid <- 0 until ini_worker_num){
-          // deal with one part from the initial worker
-          val last_index: Array[Int] = xx(wid)._2
-          val labels: Array[Double] = xx(wid)._3
-          val indices: Array[Int] = xx(wid)._4
-          val values: Array[Double] = xx(wid)._5
-          startIndexId = 0
-          endIndexId = last_index(0)
-          result(gdid) = LabeledPartDataPoint(labels(0),
-            new SparseVector(num_features,
-              indices.slice(startIndexId, endIndexId),
-              values.slice(startIndexId, endIndexId)))
-          gdid += 1
-          for(ldid <- 1 until last_index.length){ // local data id
-            // start: 1
-            startIndexId = last_index(ldid - 1)
-            endIndexId = last_index(ldid)
-            result(gdid) = LabeledPartDataPoint(labels(ldid),
-              new SparseVector(num_features,
-                indices.slice(startIndexId, endIndexId),
-                values.slice(startIndexId, endIndexId)))
-            gdid += 1
-          }
-        }
-        Iterator(result)
+        val workSet = xx(0).group(xx)
+        Iterator(workSet)
       }
     )
     result
@@ -198,7 +161,7 @@ object MLUtils extends Logging {
                            sc: SparkContext,
                            path: String,
                            num_features: Int,
-                           num_partitions: Int): RDD[Array[LabeledPartDataPoint]] = {
+                           num_partitions: Int): RDD[WorkSet] = {
 
     // for shuffle, (partitionId, (workerId, label, indices, values))
     val tmp: RDD[(Int, (Int, Array[LabeledPartDataPoint]))] = sc.textFile(path, minPartitions = num_partitions)
@@ -240,7 +203,7 @@ object MLUtils extends Logging {
     val tmp2: RDD[(Int, (Int, Array[LabeledPartDataPoint]))] = tmp.partitionBy(new HashPartitioner(num_partitions))
     // this shuffle takes too long time, start --> mapPartitionWithIndex done, 23s,  however, start --> groupByKey, 70s.
 
-    val xx: RDD[(Array[LabeledPartDataPoint])] = tmp2.mapPartitions(
+    val xx: RDD[WorkSet] = tmp2.mapPartitions(
       iter => {
         var start = System.currentTimeMillis()
         val xx: Array[Array[LabeledPartDataPoint]] = new Array[Array[LabeledPartDataPoint]](ini_worker_num)
@@ -253,7 +216,7 @@ object MLUtils extends Logging {
           xx(0) ++= xx(wid)
         }
         logInfo(s"ghand=combineArrays:${(System.currentTimeMillis() - start ) / 1000.0}")
-        Iterator(xx(0))
+        Iterator(new ArrayWorkSet(xx(0)))
       }
     )
     xx
@@ -271,7 +234,7 @@ object MLUtils extends Logging {
                        sc: SparkContext,
                        path: String,
                        num_features: Int,
-                       num_partitions: Int): RDD[Array[LabeledPartDataPoint]] = {
+                       num_partitions: Int): RDD[WorkSet] = {
 
     // for shuffle, (partitionId, (workerId, label, indices, values))
     val tmp: RDD[(Int, (Int, LabeledPartDataPoint))] = sc.textFile(path, minPartitions = num_partitions)
@@ -316,7 +279,7 @@ object MLUtils extends Logging {
         for(pid <- 1 until(ini_num_partitons))
           dataPoints(0) ++= dataPoints(pid).result()
 
-        Iterator(dataPoints(0).result())
+        Iterator(new ArrayWorkSet(dataPoints(0).result()))
       }
     )
   }
@@ -401,7 +364,7 @@ object MLUtils extends Logging {
                                      sc: SparkContext,
                                      path: String,
                                      num_features: Int,
-                                     num_partitions: Int): RDD[Array[LabeledPartDataPoint]] = {
+                                     num_partitions: Int): RDD[WorkSet] = {
     // local_data_id, label, indices, values
     val parsed: RDD[(Int, Double, Array[Int], Array[Double])] =
       parseLibSVMFile(sc, path, minPartitions = num_partitions)
@@ -477,7 +440,7 @@ object MLUtils extends Logging {
       }.flatMap(x => x)
     }
 
-    val indexed_data_point: RDD[(Array[LabeledPartDataPoint])] = global_splitted_data_point
+    val indexed_data_point: RDD[WorkSet] = global_splitted_data_point
       .groupByKey(num_partitions).mapPartitions(
       iter => {
         val partition: (Int, Iterable[(Int, Double, Array[Int], Array[Double])]) = iter.next()
@@ -495,10 +458,9 @@ object MLUtils extends Logging {
           array_indexed_data_points(data_id) = LabeledPartDataPoint(label, new SparseVector(real_num_features, indices, values))
         }
 
-        Iterator((array_indexed_data_points))
+        Iterator(new ArrayWorkSet(array_indexed_data_points))
       }
     )
-    indexed_data_point.setName("input data RDD")
     indexed_data_point
   }
 

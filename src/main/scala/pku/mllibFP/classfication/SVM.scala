@@ -1,12 +1,12 @@
 package pku.mllibFP.classfication
 
 import org.apache.spark.mllib.linalg.{DenseVector, SparseVector}
-import pku.mllibFP.util.{ColumnMLDenseVectorException, LabeledPartDataPoint, MLUtils}
+import pku.mllibFP.util.{ColumnMLDenseVectorException, LabeledPartDataPoint, MLUtils, WorkSet}
 import org.apache.spark.rdd.RDD
 
 import scala.util.Random
 
-class SVM(@transient inputRDD: RDD[Array[LabeledPartDataPoint]],
+class SVM(@transient inputRDD: RDD[WorkSet],
           numFeatures: Int,
           numPartitions: Int,
           regParam: Double,
@@ -16,7 +16,7 @@ class SVM(@transient inputRDD: RDD[Array[LabeledPartDataPoint]],
   regParam, stepSize, numIterations, miniBatchSize) {
 
 
-  override def generateModel(inputRDD: RDD[Array[LabeledPartDataPoint]]): RDD[(Array[LabeledPartDataPoint],
+  override def generateModel(inputRDD: RDD[WorkSet]): RDD[(WorkSet,
     Array[Array[Double]])] = {
     // initialize intermediate results
     intermediateResults = Array.ofDim[Double](1, miniBatchSize)
@@ -47,14 +47,14 @@ class SVM(@transient inputRDD: RDD[Array[LabeledPartDataPoint]],
   }
 
 
-  override def computeInterResults(model: Array[Array[Double]], data_points: Array[LabeledPartDataPoint],
+  override def computeInterResults(model: Array[Array[Double]], workSet: WorkSet,
                                    new_seed: Int): Array[Array[Double]] = {
     val result: Array[Array[Double]] = Array.ofDim[Double](1, miniBatchSize)
     val rand = new Random(new_seed)
-    val num_data_points = data_points.length
+    val num_data_points = workSet.getNumDataPoints()
     for(id_batch <- 0 until miniBatchSize){
       val id_global = rand.nextInt(num_data_points)
-      data_points(id_global).features match {
+      workSet.getLabeledPartDataPoint(id_global).features match {
         case sp: SparseVector => {
           val indices = sp.indices
           val values = sp.values
@@ -70,16 +70,28 @@ class SVM(@transient inputRDD: RDD[Array[LabeledPartDataPoint]],
     result
   }
 
-  override def updateModel(model: Array[Array[Double]], data_points: Array[LabeledPartDataPoint],
+//  /**
+//    * later added.
+//    * @param modelRDD
+//    * @param labels
+//    * @param validSize
+//    * @return
+//    */
+//  override def valid(modelRDD: RDD[(WorkSet, Array[Array[Double]])],
+//            labels: Array[Double], validSize: Int): Double = {
+//    0
+//  }
+
+  override def updateModel(model: Array[Array[Double]], workSet: WorkSet,
                            interResults: Array[Array[Double]], last_seed: Int, iterationId: Int): Unit ={
     val rand = new Random(last_seed)
-    val num_data_points = data_points.length
+    val num_data_points = workSet.getNumDataPoints()
 
     val gradient: Array[Double] = new Array[Double](model(0).length) // dimension of the local model.
 
     for(id_batch <- 0 until miniBatchSize){
       val id_global = rand.nextInt(num_data_points)
-      val tmp_data_point = data_points(id_global)
+      val tmp_data_point = workSet.getLabeledPartDataPoint(id_global)
       val label_scaled = 2 * tmp_data_point.label - 1
       val margin = label_scaled * interResults(0){id_batch}
       if(margin < 1){
