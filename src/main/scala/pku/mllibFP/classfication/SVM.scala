@@ -15,11 +15,13 @@ class SVM(@transient inputRDD: RDD[WorkSet],
           miniBatchSize: Int) extends BaseFPModel(inputRDD, numFeatures, numPartitions,
   regParam, stepSize, numIterations, miniBatchSize) {
 
+  override def iniInterResult(): Unit = {
+    // initialize intermediate results
+    intermediateResults = Array.ofDim[Double](1, miniBatchSize)
+  }
 
   override def generateModel(inputRDD: RDD[WorkSet]): RDD[(WorkSet,
     Array[Array[Double]])] = {
-    // initialize intermediate results
-    intermediateResults = Array.ofDim[Double](1, miniBatchSize)
     // generate model
     inputRDD.mapPartitions{
       iter => {
@@ -29,30 +31,29 @@ class SVM(@transient inputRDD: RDD[WorkSet],
     }
   }
 
-
   override def computeBatchLoss(interResults: Array[Array[Double]], labels: Array[Double],
-                                seed: Int): Double = {
+                                batchSize: Int, seed: Int): Double = {
     val rand = new Random(seed)
     var batchLoss: Double = 0
     val num_data_points = labels.length
 
-    for(id_batch <- 0 until miniBatchSize){
+    for(id_batch <- 0 until batchSize){
       val id_global = rand.nextInt(num_data_points)
       val label_scaled = 2 * labels(id_global) - 1
       val margin = label_scaled * interResults(0)(id_batch)
       if(margin < 1)
         batchLoss += 1 - margin
     }
-    batchLoss / miniBatchSize
+    batchLoss / batchSize
   }
 
 
   override def computeInterResults(model: Array[Array[Double]], workSet: WorkSet,
-                                   new_seed: Int): Array[Array[Double]] = {
-    val result: Array[Array[Double]] = Array.ofDim[Double](1, miniBatchSize)
+                                   batchSize: Int, new_seed: Int): Array[Array[Double]] = {
+    val result: Array[Array[Double]] = Array.ofDim[Double](1, batchSize)
     val rand = new Random(new_seed)
     val num_data_points = workSet.getNumDataPoints()
-    for(id_batch <- 0 until miniBatchSize){
+    for(id_batch <- 0 until batchSize){
       val id_global = rand.nextInt(num_data_points)
       workSet.getLabeledPartDataPoint(id_global).features match {
         case sp: SparseVector => {
@@ -70,26 +71,14 @@ class SVM(@transient inputRDD: RDD[WorkSet],
     result
   }
 
-//  /**
-//    * later added.
-//    * @param modelRDD
-//    * @param labels
-//    * @param validSize
-//    * @return
-//    */
-//  override def valid(modelRDD: RDD[(WorkSet, Array[Array[Double]])],
-//            labels: Array[Double], validSize: Int): Double = {
-//    0
-//  }
-
-  override def updateModel(model: Array[Array[Double]], workSet: WorkSet,
-                           interResults: Array[Array[Double]], last_seed: Int, iterationId: Int): Unit ={
+  override def updateModel(model: Array[Array[Double]], workSet: WorkSet, interResults: Array[Array[Double]],
+                           batchSize: Int, last_seed: Int, iterationId: Int): Unit ={
     val rand = new Random(last_seed)
     val num_data_points = workSet.getNumDataPoints()
 
     val gradient: Array[Double] = new Array[Double](model(0).length) // dimension of the local model.
 
-    for(id_batch <- 0 until miniBatchSize){
+    for(id_batch <- 0 until batchSize){
       val id_global = rand.nextInt(num_data_points)
       val tmp_data_point = workSet.getLabeledPartDataPoint(id_global)
       val label_scaled = 2 * tmp_data_point.label - 1
@@ -115,7 +104,7 @@ class SVM(@transient inputRDD: RDD[WorkSet],
       }
     }
     for(iid <- 0 until(model(0).length)){
-      model(0)(iid) -= stepSize * gradient(iid) / miniBatchSize
+      model(0)(iid) -= stepSize * gradient(iid) / batchSize
     }
 
   }

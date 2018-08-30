@@ -16,11 +16,13 @@ class FM(@transient inputRDD: RDD[WorkSet],
          modelK: Int) extends BaseFPModel(inputRDD, numFeatures, numPartitions,
   regParam, stepSize, numIterations, miniBatchSize) {
 
+  override def iniInterResult(): Unit = {
+    // dotProduct = sum_i (w_i * x_i + 0.5 * \sum_f (v_{if}^2 * x_i^2)), S_f  = V_f * x
+    intermediateResults = Array.ofDim[Double](modelK + 1, miniBatchSize)
+  }
 
   override def generateModel(inputRDD: RDD[WorkSet]): RDD[(WorkSet,
     Array[Array[Double]])] = {
-    // dotProduct = sum_i (w_i * x_i + 0.5 * \sum_f (v_{if}^2 * x_i^2)), S_f  = V_f * x
-    intermediateResults = Array.ofDim[Double](modelK + 1, miniBatchSize)
     // generate model
     inputRDD.mapPartitions{
       iter => {
@@ -37,15 +39,14 @@ class FM(@transient inputRDD: RDD[WorkSet],
     }
   }
 
-
   override def computeInterResults(model: Array[Array[Double]], workSet: WorkSet,
-                                   new_seed: Int): Array[Array[Double]] = {
+                                   batchSize: Int, new_seed: Int): Array[Array[Double]] = {
     // first line: w*x, next k line: S_f, next k line: G_f
-    val result: Array[Array[Double]] = Array.ofDim[Double](modelK + 1, miniBatchSize)
+    val result: Array[Array[Double]] = Array.ofDim[Double](modelK + 1, batchSize)
 
     val rand = new Random(new_seed)
     val num_data_points = workSet.getNumDataPoints()
-    for(id_batch <- 0 until miniBatchSize){
+    for(id_batch <- 0 until batchSize){
       val id_global = rand.nextInt(num_data_points)
       workSet.getLabeledPartDataPoint(id_global).features match {
         case sp: SparseVector => {
@@ -71,34 +72,35 @@ class FM(@transient inputRDD: RDD[WorkSet],
     result
   }
 
+
   override def computeBatchLoss(interResults: Array[Array[Double]], labels: Array[Double],
-                                seed: Int): Double = {
+                                batchSize: Int, seed: Int): Double = {
     val rand = new Random(seed)
     var batchLoss: Double = 0
     val num_data_points = labels.length
 
-    val s2_f: Array[Double] = new Array[Double](miniBatchSize)
+    val s2_f: Array[Double] = new Array[Double](batchSize)
     for(id_model <- 1 until (modelK + 1)){
-      for(id_batch <- 0 until miniBatchSize){
+      for(id_batch <- 0 until batchSize){
         s2_f(id_batch) += math.pow(interResults(id_model)(id_batch), 2)
       }
     }
 
-    for(id_batch <- 0 until miniBatchSize){
+    for(id_batch <- 0 until batchSize){
       val id_global = rand.nextInt(num_data_points)
       val label_scaled = 2 * labels(id_global) - 1
       batchLoss += MLUtils.log1pExp(-label_scaled * (interResults(0)(id_batch) + 0.5 * s2_f(id_batch)))
     }
-    batchLoss / miniBatchSize
+    batchLoss / batchSize
   }
 
-
   override def updateModel(model: Array[Array[Double]], workSet: WorkSet,
-                           interResults: Array[Array[Double]], last_seed: Int, iterationId: Int): Unit ={
+                           interResults: Array[Array[Double]],
+                           batchSize: Int, last_seed: Int, iterationId: Int): Unit ={
     val rand = new Random(last_seed)
     // update the model
     val num_data_points = workSet.getNumDataPoints()
-    for(id_batch <- 0 until miniBatchSize){
+    for(id_batch <- 0 until batchSize){
       val id_global = rand.nextInt(num_data_points)
       val tmp_data_point = workSet.getLabeledPartDataPoint(id_global)
       // use one data point to update the model (k sub-models)
@@ -115,12 +117,12 @@ class FM(@transient inputRDD: RDD[WorkSet],
 
           // update w
           for(idx <- 0 until indices.length) {
-            model(0)(indices(idx)) -= stepSize / miniBatchSize * tmp_grad * values(idx)
+            model(0)(indices(idx)) -= stepSize / batchSize * tmp_grad * values(idx)
           }
           // update v_f
           for(id_model <- 1 until (modelK + 1)) {
             for(idx <- 0 until indices.length) {
-              model(id_model)(indices(idx)) -= stepSize / miniBatchSize * tmp_grad *
+              model(id_model)(indices(idx)) -= stepSize / batchSize * tmp_grad *
                 (values(idx) * interResults(id_model)(id_batch) -
                   model(id_model)(indices(idx)) * values(idx) * values(idx))
             }
