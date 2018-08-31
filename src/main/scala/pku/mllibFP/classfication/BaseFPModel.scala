@@ -1,10 +1,11 @@
 package pku.mllibFP.classfication
 
 import breeze.optimize.BatchSize
-import org.apache.spark.SparkEnv
+import org.apache.hadoop.hdfs.server.common.Storage
+import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
-import pku.mllibFP.util.{LabeledPartDataPoint, WorkSet}
+import pku.mllibFP.util.{ColumnMLConf, ColumnMLTaskException, LabeledPartDataPoint, WorkSet}
 import org.apache.spark.internal.Logging
 
 import scala.reflect.ClassTag
@@ -95,6 +96,13 @@ abstract class BaseFPModel[T: ClassTag](@transient inputRDD: RDD[WorkSet],
         val workset: WorkSet = first_ele._1
         val model: Array[Array[Double]] = first_ele._2
 
+        // manually throw an exception to model task failure
+//        if(TaskContext.getPartitionId() == 0 && iterationId == 50 && ColumnMLConf.ExceptionCnt == 1){
+//          ColumnMLConf.ExceptionCnt -= 1
+//          logInfo(s"ghand=TaskException happens here")
+//          throw new ColumnMLTaskException
+//        }
+
         // update model first
         var worker_start_time = System.currentTimeMillis()
         updateL2Regu(model, regParam)
@@ -181,6 +189,13 @@ abstract class BaseFPModel[T: ClassTag](@transient inputRDD: RDD[WorkSet],
     modelRDD.cache()
     modelRDD.setName("modelRDD")
 
+    // do checkpoint for fault tolerance.
+//    if(ColumnMLConf.ExceptionCnt == 1) {
+//      val ckdir = SparkEnv.get.conf.get("spark.checkpointDir", "checkpoint")
+//      modelRDD.sparkContext.setCheckpointDir(ckdir)
+//      modelRDD.checkpoint()
+//    }
+
     // collect labels to the driver
     val tmp: Array[(Int, Int, Array[Double])] = modelRDD.mapPartitionsWithIndex(
       (pid, iter) =>{
@@ -222,7 +237,7 @@ abstract class BaseFPModel[T: ClassTag](@transient inputRDD: RDD[WorkSet],
       val valid_loss: Double = valid(modelRDD, labels, (valid_ratio * labels.length).toInt)
 
       logInfo(s"ghandFP=DriverTime=evaluateBatchLossTime:" +
-        s"${(System.currentTimeMillis() - start_time) / 1000.0}=BatchLoss:${batch_loss}, trainLoss:${valid_loss}")
+        s"${(System.currentTimeMillis() - start_time) / 1000.0}=BatchLoss:${batch_loss}=trainLoss:${valid_loss}")
 
       start_time = System.currentTimeMillis()
       val bcIntermediateResults = modelRDD.sparkContext.broadcast(intermediateResults)
