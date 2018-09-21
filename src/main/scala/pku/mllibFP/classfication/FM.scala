@@ -1,7 +1,7 @@
 package pku.mllibFP.classfication
 
-import org.apache.spark.mllib.linalg.{DenseVector, SparseVector, Vector}
-import pku.mllibFP.util.{ColumnMLDenseVectorException, LabeledPartDataPoint, MLUtils, WorkSet}
+import org.apache.spark.mllib.linalg.{DenseVector, SparseVector}
+import pku.mllibFP.util.{ColumnMLDenseVectorException, MLUtils, WorkSet}
 import org.apache.spark.rdd.RDD
 
 import scala.util.Random

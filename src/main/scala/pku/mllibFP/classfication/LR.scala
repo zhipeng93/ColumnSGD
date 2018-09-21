@@ -88,7 +88,7 @@ class LR(@transient inputRDD: RDD[WorkSet],
     val rand = new Random(last_seed)
     val num_data_points = workSet.getNumDataPoints()
 
-    val gradient: Array[Double] = new Array[Double](model(0).length)
+//    val gradient: Array[Double] = new Array[Double](model(0).length)
 
     for (id_batch <- 0 until batchSize) {
       val id_global = rand.nextInt(num_data_points)
@@ -100,7 +100,8 @@ class LR(@transient inputRDD: RDD[WorkSet],
           val indices = sp.indices
           val values = sp.values
           for(iid <- 0 until(indices.length)){
-            gradient(indices(iid)) += coeff * values(iid)
+//            gradient(indices(iid)) += coeff * values(iid)
+            model(0)(indices(iid)) -= stepSize / batchSize * coeff * values(iid)
           }
         }
         case dp: DenseVector => {
@@ -108,9 +109,9 @@ class LR(@transient inputRDD: RDD[WorkSet],
         }
       }
     }
-    for(iid <- 0 until(model(0).length)){
-      model(0)(iid) -= stepSize * gradient(iid) / batchSize
-    }
+//    for(iid <- 0 until(model(0).length)){
+//      model(0)(iid) -= stepSize * gradient(iid) / batchSize
+//    }
   }
 
 }
