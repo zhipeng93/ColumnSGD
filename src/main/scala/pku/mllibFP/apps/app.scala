@@ -25,7 +25,7 @@ object app{
     // not cached, to be cached in FPModel
 
     val models: Array[String] = model_name.split("-")
-    for(m <- models) {
+    for (m <- models) {
       m match {
         case "SVM" =>
           new SVM(inputRDD = fp_rdd,
