@@ -21,7 +21,7 @@ object app{
     val sparkContext = new SparkContext(sparkConf)
 
     // RDD[WorkSet]
-    val fp_rdd = MLUtils.bulkBigArrayLoading(sparkContext, in_path, num_features, num_partitions)
+    val fp_rdd = MLUtils.bulkCSRLoading(sparkContext, in_path, num_features, num_partitions)
     // not cached, to be cached in FPModel
 
     val models: Array[String] = model_name.split("-")

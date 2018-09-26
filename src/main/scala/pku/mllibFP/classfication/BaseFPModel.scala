@@ -1,11 +1,9 @@
 package pku.mllibFP.classfication
 
-import breeze.optimize.BatchSize
-import org.apache.hadoop.hdfs.server.common.Storage
-import org.apache.spark.{SparkEnv, TaskContext}
+import org.apache.spark.{SparkEnv}
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
-import pku.mllibFP.util.{ColumnMLConf, ColumnMLTaskException, LabeledPartDataPoint, WorkSet}
+import pku.mllibFP.util._
 import org.apache.spark.internal.Logging
 
 import scala.reflect.ClassTag
@@ -19,7 +17,7 @@ import scala.reflect.ClassTag
   * @param numIterations
   * @param miniBatchSize
   */
-abstract class BaseFPModel[T: ClassTag](@transient inputRDD: RDD[WorkSet],
+abstract class BaseFPModel[T: ClassTag](@transient inputRDD: RDD[ArrayWorkSet[WorkSet]],
                                         numFeatures: Int,
                                         numPartitions: Int,
                                         regParam: Double,
@@ -42,7 +40,7 @@ abstract class BaseFPModel[T: ClassTag](@transient inputRDD: RDD[WorkSet],
     * @param inputRDD
     * @return modelRDD, an combination of data and model.
     * */
-  def generateModel(inputRDD: RDD[WorkSet]): RDD[(WorkSet, Array[Array[Double]])]
+  def generateModel(inputRDD: RDD[ArrayWorkSet[WorkSet]]): RDD[(ArrayWorkSet[WorkSet], Array[Array[Double]])]
 
   /**
     * [executed on driver] compute the batch loss using the intermediate results gathered from executors.
@@ -51,29 +49,29 @@ abstract class BaseFPModel[T: ClassTag](@transient inputRDD: RDD[WorkSet],
     * @param seed
     * @return
     */
-  def computeBatchLoss(interResults: Array[Array[Double]], labels: Array[Double],
+  def computeBatchLoss(interResults: Array[Array[Double]], labels: ArrayLabels[Double],
                        batchSize: Int = miniBatchSize, seed: Int): Double
 
   /**
     * [executed on executors] compute the intermediate results to be gathered to the driver[not gathered yet].
     * They could be dot product for linear models, (w, V) for factorization machine, (w1, ..., wk) for MLR.
     * @param model
-    * @param work_set
+    * @param arrayWorkSet
     * @param new_seed
     * @return
     */
-  def computeInterResults(model: Array[Array[Double]], work_set: WorkSet,
+  def computeInterResults(model: Array[Array[Double]], arrayWorkSet: ArrayWorkSet[WorkSet],
                           batchSize: Int = miniBatchSize, new_seed: Int): Array[Array[Double]]
 
   /**
     * [executed on executors]
     * update model using the intermediate results and sampled data from last_seed
     * @param model
-    * @param work_set
+    * @param arrayWorkSet
     * @param interResults
     * @param last_seed
     */
-  def updateModel(model: Array[Array[Double]], work_set: WorkSet, interResults: Array[Array[Double]],
+  def updateModel(model: Array[Array[Double]], arrayWorkSet: ArrayWorkSet[WorkSet], interResults: Array[Array[Double]],
                   batchSize: Int = miniBatchSize, last_seed: Int, iterationId: Int): Unit
 
   /**
@@ -87,13 +85,13 @@ abstract class BaseFPModel[T: ClassTag](@transient inputRDD: RDD[WorkSet],
     * @param newSeed
     * @return "IntermediateResults"(not only dot product, but also other reduced results like S_f, G_f in factorization machines)
     */
-  def updateModelAndComputeInterResults(modelRDD: RDD[(WorkSet, Array[Array[Double]])],
+  def updateModelAndComputeInterResults(modelRDD: RDD[(ArrayWorkSet[WorkSet], Array[Array[Double]])],
                                       bcInterResults: Broadcast[Array[Array[Double]]],
                                       lastSeed: Int, newSeed: Int, iterationId: Int): Array[Array[Double]] = {
     modelRDD.mapPartitions(
       iter => {
         val first_ele = iter.next()
-        val workset: WorkSet = first_ele._1
+        val arrayWorkSet: ArrayWorkSet[WorkSet] = first_ele._1
         val model: Array[Array[Double]] = first_ele._2
 
         // manually throw an exception to model task failure
@@ -106,12 +104,12 @@ abstract class BaseFPModel[T: ClassTag](@transient inputRDD: RDD[WorkSet],
         // update model first
         var worker_start_time = System.currentTimeMillis()
         updateL2Regu(model, regParam)
-        updateModel(model, workset, bcInterResults.value, miniBatchSize, lastSeed, iterationId)
+        updateModel(model, arrayWorkSet, bcInterResults.value, miniBatchSize, lastSeed, iterationId)
         logInfo(s"ghandFP=WorkerTime=updateModel:${(System.currentTimeMillis() - worker_start_time) / 1000.0}")
 
         // compute dot product
         worker_start_time = System.currentTimeMillis()
-        val results: Array[Array[Double]] = computeInterResults(model, workset, miniBatchSize, newSeed)
+        val results: Array[Array[Double]] = computeInterResults(model, arrayWorkSet, miniBatchSize, newSeed)
         logInfo(s"ghandFP=WorkerTime=BatchDotProduct:${(System.currentTimeMillis() - worker_start_time) / 1000.0}")
 
         Iterator(results)
@@ -166,14 +164,14 @@ abstract class BaseFPModel[T: ClassTag](@transient inputRDD: RDD[WorkSet],
     array1
   }
 
-  def valid(modelRDD: RDD[(WorkSet, Array[Array[Double]])],
-            labels: Array[Double], validSize: Int): Double = {
+  def valid(modelRDD: RDD[(ArrayWorkSet[WorkSet], Array[Array[Double]])],
+            labels: ArrayLabels[Double], validSize: Int): Double = {
     val interResult = modelRDD.mapPartitions(
       iter => {
         val tmp = iter.next
-        val workset = tmp._1
+        val arrayWorkSet = tmp._1
         val model = tmp._2
-        val local_result : Array[Array[Double]] = computeInterResults(model, workset, validSize, 100000)
+        val local_result : Array[Array[Double]] = computeInterResults(model, arrayWorkSet, validSize, 100000)
         Iterator(local_result)
       }
     ).reduce(aggregateResult)
@@ -185,7 +183,7 @@ abstract class BaseFPModel[T: ClassTag](@transient inputRDD: RDD[WorkSet],
 
   def miniBatchSGD(): Unit = {
     val start_loading = System.currentTimeMillis()
-    val modelRDD: RDD[(WorkSet, Array[Array[Double]])] = generateModel(inputRDD)
+    val modelRDD: RDD[(ArrayWorkSet[WorkSet], Array[Array[Double]])] = generateModel(inputRDD)
     modelRDD.cache()
     modelRDD.setName("modelRDD")
 
@@ -196,27 +194,27 @@ abstract class BaseFPModel[T: ClassTag](@transient inputRDD: RDD[WorkSet],
 //      modelRDD.checkpoint()
 //    }
 
-    // collect labels to the driver
-    val tmp: Array[(Int, Int, Array[Double])] = modelRDD.mapPartitionsWithIndex(
+    // collect labels to the driver, orangized as grouped labels
+    val tmp: Array[(Int, Array[Double])] = modelRDD.mapPartitionsWithIndex(
       (pid, iter) =>{
-        val work_set: WorkSet = iter.next._1
-        val num_data_points = work_set.getNumDataPoints()
-        val worker_data_point_num = num_data_points / numPartitions + 1
-        val start = worker_data_point_num * pid
-        val end = math.min(worker_data_point_num + start, num_data_points)
-
-        Iterator((pid, num_data_points, work_set.getLabels(start, end)))
+        val arrayWorkSet: ArrayWorkSet[WorkSet] = iter.next._1
+        val numWorkSets = arrayWorkSet.length()
+        val worker_partition_num = numWorkSets / numPartitions + 1
+        val start = worker_partition_num * pid
+        val end = math.min(worker_partition_num + start, numWorkSets)
+        val partitionIds: Array[Int] = new Array[Int](end - start)
+        for(id <- 0 until(partitionIds.length)){
+          partitionIds(id) = id + start
+        }
+        arrayWorkSet.getLabels(partitionIds).toIterator
       }
     ).collect()
 
-    val labels: Array[Double] = new Array[Double](tmp(1)._2)
-    val num_partitions = tmp.length
-    val worker_data_num = labels.length / num_partitions + 1
-    for(id <- 0 until(tmp.length)){
-      val start = worker_data_num * tmp(id)._1
-      val end = math.min(start + worker_data_num, labels.length)
-      System.arraycopy(tmp(id)._3, 0, labels, start, end - start)
+    val labels_tmp: Array[Array[Double]] = new Array[Array[Double]](tmp.length)
+    for(id <- 0 until(labels_tmp.length)){
+      labels_tmp(tmp(id)._1) = tmp(id)._2
     }
+    val labels = new ArrayLabels[Double](labels_tmp)
 
     logInfo(s"ghand=loading:${(System.currentTimeMillis() - start_loading ) / 1000.0}")
 
@@ -234,7 +232,7 @@ abstract class BaseFPModel[T: ClassTag](@transient inputRDD: RDD[WorkSet],
       val batch_loss: Double = computeBatchLoss(intermediateResults, labels, miniBatchSize, last_seed)
 
       val valid_ratio = SparkEnv.get.conf.getDouble("spark.ml.validRatio", 0.01)
-      val valid_loss: Double = valid(modelRDD, labels, (valid_ratio * labels.length).toInt)
+      val valid_loss: Double = valid(modelRDD, labels, (valid_ratio * labels.numLabels).toInt)
 
       logInfo(s"ghandFP=DriverTime=evaluateBatchLossTime:" +
         s"${(System.currentTimeMillis() - start_time) / 1000.0}=BatchLoss:${batch_loss}=trainLoss:${valid_loss}")

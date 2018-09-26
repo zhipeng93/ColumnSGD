@@ -2,7 +2,7 @@ package pku.mllibFP.classfication
 
 import org.apache.spark.SparkEnv
 import org.apache.spark.mllib.linalg.{DenseVector, SparseVector}
-import pku.mllibFP.util.{ColumnMLDenseVectorException, LabeledPartDataPoint, MLUtils, WorkSet}
+import pku.mllibFP.util._
 import org.apache.spark.rdd.RDD
 
 import scala.util.Random
@@ -20,7 +20,7 @@ import scala.util.Random
   * @param miniBatchSize
   */
 
-class AdamLR(@transient inputRDD: RDD[WorkSet],
+class AdamLR(@transient inputRDD: RDD[ArrayWorkSet[WorkSet]],
              numFeatures: Int,
              numPartitions: Int,
              regParam: Double,
@@ -29,7 +29,7 @@ class AdamLR(@transient inputRDD: RDD[WorkSet],
              miniBatchSize: Int) extends LR(inputRDD, numFeatures, numPartitions,
   regParam, stepSize, numIterations, miniBatchSize) {
 
-  override def generateModel(inputRDD: RDD[WorkSet]): RDD[(WorkSet,
+  override def generateModel(inputRDD: RDD[ArrayWorkSet[WorkSet]]): RDD[(ArrayWorkSet[WorkSet],
     Array[Array[Double]])] = {
     // generate model
     inputRDD.mapPartitions {
@@ -40,10 +40,10 @@ class AdamLR(@transient inputRDD: RDD[WorkSet],
     }
   }
 
-  override def updateModel(model: Array[Array[Double]], workSet: WorkSet, interResults: Array[Array[Double]],
+  override def updateModel(model: Array[Array[Double]], arrayWorkSet: ArrayWorkSet[WorkSet],
+                           interResults: Array[Array[Double]],
                            batchSize: Int, last_seed: Int, iterationId: Int): Unit = {
     val rand = new Random(last_seed)
-    val num_data_points = workSet.getNumDataPoints()
 
     val epsilon = SparkEnv.get.conf.getDouble("spark.ml.sgd.adam.epsilon", 1e-7)
     val beta1 = SparkEnv.get.conf.getDouble("spark.ml.sgd.adam.beta1", 0.9)
@@ -51,8 +51,7 @@ class AdamLR(@transient inputRDD: RDD[WorkSet],
     val gradient: Array[Double] = new Array[Double](model(0).length)
 
     for (id_batch <- 0 until batchSize) {
-      val id_global = rand.nextInt(num_data_points)
-      val tmp_data_point = workSet.getLabeledPartDataPoint(id_global)
+      val tmp_data_point = arrayWorkSet.getRandomLabeledPartDataPoint(rand)
       val label_scaled = 2 * tmp_data_point.label - 1
       val coeff = -label_scaled / (1 + math.exp(label_scaled * interResults(0)(id_batch)))
       tmp_data_point.features match {

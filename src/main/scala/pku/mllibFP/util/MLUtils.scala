@@ -30,15 +30,23 @@ import scala.collection.mutable.ArrayBuilder
   */
 object MLUtils extends Logging {
 
-  def bulkBigArrayLoading(
+  /**
+    *
+    * @param sc
+    * @param path
+    * @param num_features
+    * @param num_partitions
+    * @return RDD[ArrayWorkSet[PointWorkset]]
+    */
+  def bulkCSRLoading(
                            sc: SparkContext,
                            path: String,
                            num_features: Int,
                            num_partitions: Int
-                         ): RDD[WorkSet] = {
+                         ): RDD[ArrayWorkSet[WorkSet]] = {
     // first organize each partition into num_partition big Arrays
     // (pid, (workerId, indexEnd, labels, indices, values)
-    val csrWorkSet: RDD[(Int, (Int, CSRWorkSet))] = sc.textFile(path, minPartitions = num_partitions)
+    val csrWorkSet: RDD[(Int, (Int, WorkSet))] = sc.textFile(path, minPartitions = num_partitions)
       .map(_.trim)
       .filter(line => !(line.isEmpty || line.startsWith("#")))
       .mapPartitions(
@@ -133,39 +141,39 @@ object MLUtils extends Logging {
 
     val ini_worker_num = csrWorkSet.partitions.length
 
-    val result: RDD[WorkSet] = csrWorkSet.partitionBy(new HashPartitioner(num_partitions)).mapPartitions(
+    val result: RDD[ArrayWorkSet[WorkSet]] = csrWorkSet.partitionBy(new HashPartitioner(num_partitions)).mapPartitions(
       iter => {
         // (pid, workset)
-        val xx: Array[CSRWorkSet] =
-          new Array[CSRWorkSet](ini_worker_num)
+        val xx: Array[WorkSet] =
+          new Array[WorkSet](ini_worker_num)
         while (iter.hasNext) {
           val tt = iter.next()
           xx(tt._2._1) = tt._2._2
         }
-
-        var num_data_points = 0
-        for (wid <- 0 until ini_worker_num) {
-          num_data_points += xx(wid).getNumDataPoints()
-        }
-        logInfo(s"ghand=number of data points is: ${num_data_points}")
-        val workSet = xx(0).group(xx)
-        Iterator(workSet)
+        Iterator(new ArrayWorkSet((xx)))
       }
     )
     result
   }
 
-  def bulkRepartitionLoading(
+  /**
+    *
+    * @param sc
+    * @param path
+    * @param num_features
+    * @param num_partitions
+    * @return RDD[ArrayWorkSet[PointWorkset]]
+    */
+  def bulkPointLoading(
                               sc: SparkContext,
                               path: String,
                               num_features: Int,
-                              num_partitions: Int): RDD[WorkSet] = {
+                              num_partitions: Int): RDD[ArrayWorkSet[WorkSet]] = {
 
-    // for shuffle, (partitionId, (workerId, label, indices, values))
-    val splitted_data_point_array: RDD[(Int, (Int, Array[LabeledPartDataPoint]))] = sc.textFile(path, minPartitions = num_partitions)
+    // for shuffle, (partitionId, (workerId, PointWorkSet))
+    val splitted_data_point_array: RDD[(Int, (Int, PointWorkSet))] = sc.textFile(path, minPartitions = num_partitions)
       .mapPartitionsWithIndex(
         (workerId, iter) => {
-          var start: Long = System.currentTimeMillis()
           // each partition is compiled into an local_result.
           // (partitionId, (workerId, ArrayBuilder[LabeledDataPoint]))
           val local_result: Array[(Int, (Int, mutable.ArrayBuilder[LabeledPartDataPoint]))] =
@@ -184,12 +192,10 @@ object MLUtils extends Logging {
               }
             }
           }
-          logInfo(s"ghand=parseDataTime(s):${(System.currentTimeMillis() - start) / 1000.0}, workerId:${workerId}")
-          start = System.currentTimeMillis()
+
           val xx = local_result.map(
-            ele => (ele._1, (ele._2._1, ele._2._2.result()))
+            ele => (ele._1, (ele._2._1, new PointWorkSet(ele._2._2.result())))
           ).toIterator
-          logInfo(s"ghand=deepCopy(s):${(System.currentTimeMillis() - start) / 1000.0}, workerId:${workerId}")
 
           xx
         }
@@ -199,18 +205,14 @@ object MLUtils extends Logging {
     val ini_worker_num = splitted_data_point_array.partitions.length
     splitted_data_point_array.partitionBy(new HashPartitioner(num_partitions)).mapPartitions(
       iter => {
-        var start = System.currentTimeMillis()
-        val xx: Array[Array[LabeledPartDataPoint]] = new Array[Array[LabeledPartDataPoint]](ini_worker_num)
+        val xx: Array[WorkSet] = new Array[WorkSet](ini_worker_num)
         while (iter.hasNext) {
           val tt = iter.next()
           xx(tt._2._1) = tt._2._2
         }
 
-        for (wid <- 1 until xx.length) {
-          xx(0) ++= xx(wid)
-        }
-        logInfo(s"ghand=combineArrays:${(System.currentTimeMillis() - start) / 1000.0}")
-        Iterator(new ArrayWorkSet(xx(0)))
+        Iterator(new ArrayWorkSet[WorkSet](xx))
+
       }
     )
 
@@ -223,13 +225,13 @@ object MLUtils extends Logging {
     * @param path
     * @param num_features
     * @param num_partitions
-    * @return
+    * @return RDD[ArrayWorkSet[PointWorkset]]
     */
-  def pipeLineRepartitionLoading(
+  def pipeLinePointLoading(
                                   sc: SparkContext,
                                   path: String,
                                   num_features: Int,
-                                  num_partitions: Int): RDD[WorkSet] = {
+                                  num_partitions: Int): RDD[ArrayWorkSet[WorkSet]] = {
 
     // for shuffle, (partitionId, (workerId, label, indices, values))
     val splitted_data_point: RDD[(Int, (Int, LabeledPartDataPoint))] = sc.textFile(path, minPartitions = num_partitions)
@@ -266,16 +268,16 @@ object MLUtils extends Logging {
           dataPoints(wid) += lpd
         }
 
-        for (pid <- 1 until (ini_num_partitons))
-          dataPoints(0) ++= dataPoints(pid).result()
+        val result: ArrayWorkSet[WorkSet] =
+          new ArrayWorkSet[WorkSet](dataPoints.map(x => new PointWorkSet(x.result())))
 
-        Iterator(new ArrayWorkSet(dataPoints(0).result()))
+        Iterator(result)
       }
     )
   }
 
   /**
-    * Loads labeled data in the LIBSVM format into an RDD[IndexedDataPoint].
+    * Loads labeled data in the LIBSVM format into an RDD[ArrayWorkSet].
     * The LIBSVM format is a text-based format used by LIBSVM and LIBLINEAR.
     * Each line represents a labeled sparse feature vector using the following format:
     * {{{label index1:value1 index2:value2 ...}}}
@@ -286,13 +288,13 @@ object MLUtils extends Logging {
     * @param sc             Spark context
     * @param path           file or directory path in any Hadoop-supported file system URI
     * @param num_partitions min number of partitions
-    * @return RDD[WorkSet]
+    * @return RDD[ArrayWorkSet[PointWorkset]]
     */
   def loadLibSVMFileFeatureParallel(
                                      sc: SparkContext,
                                      path: String,
                                      num_features: Int,
-                                     num_partitions: Int): RDD[WorkSet] = {
+                                     num_partitions: Int): RDD[ArrayWorkSet[WorkSet]] = {
     // (partitionId, label, indices, values), partitionId is used for re-ordering the data points
     val parsed: RDD[(Int, Double, Array[Int], Array[Double])] =
       parseLibSVMFile(sc, path, minPartitions = num_partitions)
@@ -331,10 +333,10 @@ object MLUtils extends Logging {
           dataPoints(wid) += lpd
         }
 
-        for (pid <- 1 until (ini_num_partitons))
-          dataPoints(0) ++= dataPoints(pid).result()
+        val result: ArrayWorkSet[WorkSet] =
+          new ArrayWorkSet[WorkSet](dataPoints.map(x => new PointWorkSet(x.result())))
 
-        Iterator(new ArrayWorkSet(dataPoints(0).result()))
+        Iterator(result)
       }
     )
 

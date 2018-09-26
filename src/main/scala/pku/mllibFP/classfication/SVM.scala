@@ -1,12 +1,12 @@
 package pku.mllibFP.classfication
 
 import org.apache.spark.mllib.linalg.{DenseVector, SparseVector}
-import pku.mllibFP.util.{ColumnMLDenseVectorException, LabeledPartDataPoint, MLUtils, WorkSet}
+import pku.mllibFP.util._
 import org.apache.spark.rdd.RDD
 
 import scala.util.Random
 
-class SVM(@transient inputRDD: RDD[WorkSet],
+class SVM(@transient inputRDD: RDD[ArrayWorkSet[WorkSet]],
           numFeatures: Int,
           numPartitions: Int,
           regParam: Double,
@@ -20,7 +20,7 @@ class SVM(@transient inputRDD: RDD[WorkSet],
     intermediateResults = Array.ofDim[Double](1, miniBatchSize)
   }
 
-  override def generateModel(inputRDD: RDD[WorkSet]): RDD[(WorkSet,
+  override def generateModel(inputRDD: RDD[ArrayWorkSet[WorkSet]]): RDD[(ArrayWorkSet[WorkSet],
     Array[Array[Double]])] = {
     // generate model
     inputRDD.mapPartitions{
@@ -31,15 +31,13 @@ class SVM(@transient inputRDD: RDD[WorkSet],
     }
   }
 
-  override def computeBatchLoss(interResults: Array[Array[Double]], labels: Array[Double],
+  override def computeBatchLoss(interResults: Array[Array[Double]], labels: ArrayLabels[Double],
                                 batchSize: Int, seed: Int): Double = {
     val rand = new Random(seed)
     var batchLoss: Double = 0
-    val num_data_points = labels.length
 
     for(id_batch <- 0 until batchSize){
-      val id_global = rand.nextInt(num_data_points)
-      val label_scaled = 2 * labels(id_global) - 1
+      val label_scaled = 2 * labels.getRandomLabel(rand) - 1
       val margin = label_scaled * interResults(0)(id_batch)
       if(margin < 1)
         batchLoss += 1 - margin
@@ -48,14 +46,12 @@ class SVM(@transient inputRDD: RDD[WorkSet],
   }
 
 
-  override def computeInterResults(model: Array[Array[Double]], workSet: WorkSet,
+  override def computeInterResults(model: Array[Array[Double]], arrayWorkSet: ArrayWorkSet[WorkSet],
                                    batchSize: Int, new_seed: Int): Array[Array[Double]] = {
     val result: Array[Array[Double]] = Array.ofDim[Double](1, batchSize)
     val rand = new Random(new_seed)
-    val num_data_points = workSet.getNumDataPoints()
     for(id_batch <- 0 until batchSize){
-      val id_global = rand.nextInt(num_data_points)
-      workSet.getLabeledPartDataPoint(id_global).features match {
+      arrayWorkSet.getRandomLabeledPartDataPoint(rand).features match {
         case sp: SparseVector => {
           val indices = sp.indices
           val values = sp.values
@@ -71,16 +67,14 @@ class SVM(@transient inputRDD: RDD[WorkSet],
     result
   }
 
-  override def updateModel(model: Array[Array[Double]], workSet: WorkSet, interResults: Array[Array[Double]],
+  override def updateModel(model: Array[Array[Double]], arrayWorkSet: ArrayWorkSet[WorkSet],
+                           interResults: Array[Array[Double]],
                            batchSize: Int, last_seed: Int, iterationId: Int): Unit ={
     val rand = new Random(last_seed)
-    val num_data_points = workSet.getNumDataPoints()
-
 //    val gradient: Array[Double] = new Array[Double](model(0).length) // dimension of the local model.
 
     for(id_batch <- 0 until batchSize){
-      val id_global = rand.nextInt(num_data_points)
-      val tmp_data_point = workSet.getLabeledPartDataPoint(id_global)
+      val tmp_data_point = arrayWorkSet.getRandomLabeledPartDataPoint(rand)
       val label_scaled = 2 * tmp_data_point.label - 1
       val margin = label_scaled * interResults(0){id_batch}
       if(margin < 1){
