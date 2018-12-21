@@ -1,2 +1,2 @@
-# feature parallel code on Spark
+# ColumnML code on Spark
 
