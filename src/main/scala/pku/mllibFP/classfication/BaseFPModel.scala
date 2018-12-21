@@ -230,9 +230,11 @@ abstract class BaseFPModel[T: ClassTag](@transient inputRDD: RDD[ArrayWorkSet[Wo
       last_seed = cur_seed - 1
       // compute loss from last iteration
       val batch_loss: Double = computeBatchLoss(intermediateResults, labels, miniBatchSize, last_seed)
-
       val valid_ratio = SparkEnv.get.conf.getDouble("spark.ml.validRatio", 0.01)
-      val valid_loss: Double = valid(modelRDD, labels, (valid_ratio * labels.numLabels).toInt)
+      var valid_loss: Double = 0
+      if (iter_id % 1 == 0) {
+        valid_loss = valid(modelRDD, labels, (valid_ratio * labels.numLabels).toInt)
+      }
 
       logInfo(s"ghandFP=DriverTime=evaluateBatchLossTime:" +
         s"${(System.currentTimeMillis() - start_time) / 1000.0}=BatchLoss:${batch_loss}=trainLoss:${valid_loss}")
