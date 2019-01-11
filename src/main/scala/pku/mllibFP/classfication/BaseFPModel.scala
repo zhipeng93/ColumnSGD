@@ -202,11 +202,15 @@ abstract class BaseFPModel[T: ClassTag](@transient inputRDD: RDD[ArrayWorkSet[Wo
         val worker_partition_num = numWorkSets / numPartitions + 1
         val start = worker_partition_num * pid
         val end = math.min(worker_partition_num + start, numWorkSets)
-        val partitionIds: Array[Int] = new Array[Int](end - start)
-        for(id <- 0 until(partitionIds.length)){
-          partitionIds(id) = id + start
+        if(end > start) {
+          val partitionIds: Array[Int] = new Array[Int](end - start)
+          for (id <- 0 until (partitionIds.length)) {
+            partitionIds(id) = id + start
+          }
+          arrayWorkSet.getLabels(partitionIds).toIterator
         }
-        arrayWorkSet.getLabels(partitionIds).toIterator
+        else
+          Array.empty[(Int, Array[Double])].toIterator
       }
     ).collect()
 
@@ -232,7 +236,7 @@ abstract class BaseFPModel[T: ClassTag](@transient inputRDD: RDD[ArrayWorkSet[Wo
       val batch_loss: Double = computeBatchLoss(intermediateResults, labels, miniBatchSize, last_seed)
       val valid_ratio = SparkEnv.get.conf.getDouble("spark.ml.validRatio", 0.01)
       var valid_loss: Double = 0
-      if (iter_id % 1 == 0) {
+      if (iter_id % 10 == 0) {
         valid_loss = valid(modelRDD, labels, (valid_ratio * labels.numLabels).toInt)
       }
 
