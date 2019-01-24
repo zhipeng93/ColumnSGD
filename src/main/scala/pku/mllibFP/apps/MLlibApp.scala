@@ -7,6 +7,8 @@ import org.apache.spark.mllib.util.MLUtils
 import org.apache.spark.rdd.RDD
 import org.apache.spark.storage.StorageLevel
 
+import scala.collection.mutable.ArrayBuffer
+
 object MLlibApp{
   def main(args: Array[String]): Unit ={
     val in_path = args(0)
@@ -27,8 +29,13 @@ object MLlibApp{
     val start_loading = System.currentTimeMillis()
     // RDD[Array[LabeledPartDataPoint]]
     // RDD[(Int, Array[IndexedDataPoint])], Array[Double])
-    val data_rdd: RDD[LabeledPoint] = MLUtils.loadLibSVMFile(sparkContext, in_path, num_features, minPartitions = num_partitions)
-      .repartition(num_partitions)
+//    val data_rdd: RDD[LabeledPoint] = MLUtils.loadLibSVMFile(sparkContext, in_path, num_features, minPartitions = num_partitions)
+//      .repartition(num_partitions)
+//      .persist(StorageLevel.MEMORY_ONLY)
+
+    // avoid shuffle twice
+    val data_rdd: RDD[LabeledPoint] = MLUtils.loadLibSVMFile(sparkContext, in_path, num_features, minPartitions = num_partitions * 5)
+      .coalesce(num_partitions)
       .persist(StorageLevel.MEMORY_ONLY)
 
     data_rdd.count()
