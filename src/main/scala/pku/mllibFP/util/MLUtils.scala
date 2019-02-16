@@ -123,6 +123,7 @@ object MLUtils extends Logging {
 //                last_index(new_partition_id) += 1
 
                 // replicate hash: the features in bucket K is now in $K$ and $K + 1$ % num_buckets
+                // NOTE: the index slice of one data point in a partition is not ordered anymore.
                 new_partition_id = index % num_partitions
                 new_feature_id = index / num_partitions
                 local_result(new_partition_id)._2._3 += new_feature_id
@@ -135,6 +136,7 @@ object MLUtils extends Logging {
                 local_result(new_partition_id)._2._3 += new_feature_id
                 local_result(new_partition_id)._2._4 += value
                 last_index(new_partition_id) += 1
+
 
               }
               for (pid <- 0 until num_partitions) {
