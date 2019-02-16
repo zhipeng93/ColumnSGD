@@ -116,8 +116,22 @@ object MLUtils extends Logging {
                 //      new_feature_id = index - new_partition_id * worker_feature_num
 
                 // hash split:
+//                new_partition_id = index % num_partitions
+//                new_feature_id = index / num_partitions
+//                local_result(new_partition_id)._2._3 += new_feature_id
+//                local_result(new_partition_id)._2._4 += value
+//                last_index(new_partition_id) += 1
+
+                // replicate hash: the features in bucket K is now in $K$ and $K + 1$ % num_buckets
                 new_partition_id = index % num_partitions
                 new_feature_id = index / num_partitions
+                local_result(new_partition_id)._2._3 += new_feature_id
+                local_result(new_partition_id)._2._4 += value
+                last_index(new_partition_id) += 1
+
+                // also put it in the next bucket
+                new_partition_id = (new_partition_id + 1) % num_partitions
+                new_feature_id = index / num_partitions + (num_features / num_partitions + 1)
                 local_result(new_partition_id)._2._3 += new_feature_id
                 local_result(new_partition_id)._2._4 += value
                 last_index(new_partition_id) += 1

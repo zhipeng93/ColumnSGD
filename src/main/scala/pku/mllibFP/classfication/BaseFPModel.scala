@@ -243,7 +243,7 @@ abstract class BaseFPModel[T: ClassTag](@transient inputRDD: RDD[ArrayWorkSet[Wo
       var valid_loss: Double = 0
 
       // set the valid ratio for debugging.
-      if (iter_id % 1000 == 0) {
+      if (iter_id % 1 == 0) {
         valid_loss = valid(modelRDD, labels, (valid_ratio * labels.numLabels).toInt)
       }
 

@@ -38,7 +38,8 @@ class LR(@transient inputRDD: RDD[ArrayWorkSet[WorkSet]],
     // generate model
     inputRDD.mapPartitions {
       iter => {
-        val model: Array[Array[Double]] = Array.ofDim[Double](1, numFeatures / numPartitions + 1)
+        val model: Array[Array[Double]] = Array.ofDim[Double](1, (numFeatures / numPartitions + 1) * 2)
+        // duplicate model size for backup computation
         Iterator((iter.next(), model))
       }
     }
@@ -68,7 +69,8 @@ class LR(@transient inputRDD: RDD[ArrayWorkSet[WorkSet]],
           val indices = sp.indices
           val values = sp.values
           for (idx <- 0 until indices.length) {
-            result(0)(id_batch) += values(idx) * model(0)(indices(idx))
+            result(0)(id_batch) += values(idx) * model(0)(indices(idx)) / 2
+            // due to bachup computation
           }
         }
         case dp: DenseVector => {
