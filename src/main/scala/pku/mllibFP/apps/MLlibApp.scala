@@ -34,7 +34,7 @@ object MLlibApp{
 //      .persist(StorageLevel.MEMORY_ONLY)
 
     // avoid shuffle twice
-    val data_rdd: RDD[LabeledPoint] = MLUtils.loadLibSVMFile(sparkContext, in_path, num_features, minPartitions = num_partitions * 5)
+    val data_rdd: RDD[LabeledPoint] = MLUtils.loadLibSVMFile(sparkContext, in_path, num_features, minPartitions = num_partitions * 3)
       .coalesce(num_partitions)
       .persist(StorageLevel.MEMORY_ONLY)
 

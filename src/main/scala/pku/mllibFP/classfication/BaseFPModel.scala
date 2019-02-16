@@ -1,6 +1,6 @@
 package pku.mllibFP.classfication
 
-import org.apache.spark.{SparkEnv}
+import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import pku.mllibFP.util._
@@ -100,6 +100,11 @@ abstract class BaseFPModel[T: ClassTag](@transient inputRDD: RDD[ArrayWorkSet[Wo
 //          logInfo(s"ghand=TaskException happens here")
 //          throw new ColumnMLTaskException
 //        }
+
+        if(SparkEnv.get.conf.get("spark.ml.straggler", "false").toBoolean) {
+          if(TaskContext.getPartitionId() == 0)
+            Thread.sleep(300)
+        }
 
         // update model first
         var worker_start_time = System.currentTimeMillis()
@@ -236,7 +241,9 @@ abstract class BaseFPModel[T: ClassTag](@transient inputRDD: RDD[ArrayWorkSet[Wo
       val batch_loss: Double = computeBatchLoss(intermediateResults, labels, miniBatchSize, last_seed)
       val valid_ratio = SparkEnv.get.conf.getDouble("spark.ml.validRatio", 0.01)
       var valid_loss: Double = 0
-      if (iter_id % 10 == 0) {
+
+      // set the valid ratio for debugging.
+      if (iter_id % 1000 == 0) {
         valid_loss = valid(modelRDD, labels, (valid_ratio * labels.numLabels).toInt)
       }
 
