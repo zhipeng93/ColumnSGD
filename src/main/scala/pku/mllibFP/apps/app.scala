@@ -1,6 +1,6 @@
 package pku.mllibFP.apps
 
-import org.apache.spark.{SparkConf, SparkContext}
+import org.apache.spark.{SparkConf, SparkContext, SparkEnv}
 import pku.mllibFP.util.MLUtils
 import pku.mllibFP.classfication._
 
@@ -19,6 +19,7 @@ object app{
 
     val sparkConf = new SparkConf().setAppName("FP-" + model_name)
     val sparkContext = new SparkContext(sparkConf)
+    val num_class: Int = SparkEnv.get.conf.get("spark.ml.numClasses", "2").toInt
 
     // RDD[WorkSet]
     val fp_rdd = MLUtils.bulkCSRLoading(sparkContext, in_path, num_features, num_partitions)
@@ -90,6 +91,16 @@ object app{
             numIterations = num_iteration,
             miniBatchSize = mini_batch_size,
             modelK = vk).miniBatchSGD()
+        }
+        case "MLP" => {
+          new MLP(inputRDD = fp_rdd,
+            numFeatures = num_features,
+            numPartitions = num_partitions,
+            regParam = reg_para,
+            stepSize = step_size,
+            numIterations = num_iteration,
+            miniBatchSize = mini_batch_size,
+            numClasses = num_class).miniBatchSGD()
         }
       }
     }
