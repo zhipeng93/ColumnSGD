@@ -26,7 +26,7 @@ class MLP(@transient inputRDD: RDD[ArrayWorkSet[WorkSet]],
           numIterations: Int,
           miniBatchSize: Int,
           numClasses: Int) extends Serializable with Logging {
-  val layers = Array(numFeatures, 1000, numClasses)
+  val layers = Array(numFeatures, 500, numClasses)
   /**
     * [executed on executors]
     * generate the model, cache the data, compute the labels also new the intermediateResults Array
@@ -40,6 +40,7 @@ class MLP(@transient inputRDD: RDD[ArrayWorkSet[WorkSet]],
       iter => {
         val model: Array[Array[Array[Double]]] = new Array[Array[Array[Double]]](layers.length - 1)
 
+        // also intialize the model with val random = new XORShiftRandom(seed)
         // first layer. The input is partitioned by hash or range. Thus, the the first layer may contains more neurons than specified.
         val layerId = 0
         model(layerId) = Array.ofDim(layers(layerId) / numPartitions + 1, layers(layerId + 1))
@@ -59,6 +60,8 @@ class MLP(@transient inputRDD: RDD[ArrayWorkSet[WorkSet]],
 
           }
         }
+
+        init_model(model)
 
         // cache all feature maps in memory
         val intermediateResults: Array[Array[Array[Double]]] = new Array[Array[Array[Double]]](layers.length)
@@ -103,8 +106,6 @@ class MLP(@transient inputRDD: RDD[ArrayWorkSet[WorkSet]],
           val values = sp.values
           for (id_neuron <- 0 until neuronSize) {
             for (idx <- 0 until indices.length) {
-              assert(indices(idx) < model_this_layer.length, s"indices(idx): ${indices(idx)} !< ${model_this_layer.length}")
-              assert(id_neuron < model_this_layer(0).length, s"id_neruon: ${id_neuron} !< ${model_this_layer(0).length}")
               result(id_neuron)(id_batch) += values(idx) * model_this_layer(indices(idx))(id_neuron)
             }
           }
@@ -220,7 +221,8 @@ class MLP(@transient inputRDD: RDD[ArrayWorkSet[WorkSet]],
     for (id_batch <- 0 until (miniBatchSize)) {
       for (tmp_id <- inputStartIndex until (inputEndIndex)) {
         for (id_neuron <- 0 until (neuronSize)) {
-          model_this_layer(tmp_id - inputStartIndex)(id_neuron) -= stepSize * lastLayerInput(tmp_id)(id_batch) * inputGrad(id_neuron)(id_batch)
+          model_this_layer(tmp_id - inputStartIndex)(id_neuron) -=
+            stepSize * lastLayerInput(tmp_id)(id_batch) * inputGrad(id_neuron)(id_batch) / miniBatchSize
         }
       }
     }
@@ -245,7 +247,8 @@ class MLP(@transient inputRDD: RDD[ArrayWorkSet[WorkSet]],
           for (id_neuron <- 0 until (neuronSize)) {
             // update model_this_layer(indices(idx))(id_neuron)
             for (iid <- 0 until (indices.length)) {
-              model_this_layer(indices(iid))(id_neuron) -= stepSize * inputGrad(id_neuron)(id_batch) * values(iid)
+              model_this_layer(indices(iid))(id_neuron) -=
+                stepSize * inputGrad(id_neuron)(id_batch) * values(iid) / miniBatchSize
             }
           }
         }
@@ -336,8 +339,12 @@ class MLP(@transient inputRDD: RDD[ArrayWorkSet[WorkSet]],
 
       // note that, we do not apply sigmoid for the last layer output.
       softmax(tmpInterResult)
-      val batchLoss = computeBatchLoss(tmpInterResult, labels, miniBatchSize, cur_seed)
-      logInfo(s"ghandBatchLoss:${batchLoss}")
+
+      val evaluateStart = System.currentTimeMillis()
+      val (batchLoss, acc) = computeBatchLoss(tmpInterResult, labels, cur_seed)
+      val evaluteDuration = System.currentTimeMillis() - evaluateStart
+
+      logInfo(s"Iteration: ${iter_id}, evaluteDuration: ${evaluteDuration}, ghandAccuracy:${acc}, ghandBatchLoss:${batchLoss}")
 
       // backward pass
       // for each layer h_i, broadcast dl/dh_i, collect dl/dh_{i-1}
@@ -386,7 +393,7 @@ class MLP(@transient inputRDD: RDD[ArrayWorkSet[WorkSet]],
       tmpBCInterResult.destroy()
 
       logInfo(s"ghandFP=DriverTime=trainTime:" +
-        s"${(System.currentTimeMillis() - start_time) / 1000.0}")
+        s"${(System.currentTimeMillis() - start_time - evaluteDuration) / 1000.0}")
       iter_id += 1
     }
 
@@ -416,16 +423,26 @@ class MLP(@transient inputRDD: RDD[ArrayWorkSet[WorkSet]],
     * @return
     */
   def computeBatchLoss(lastLayerResults: Array[Array[Double]], labels: ArrayLabels[Double],
-                       seed: Int): Double = {
+                       seed: Int): (Double, Double) = {
     val rand = new Random(seed)
     var batchLoss: Double = 0
     assert(lastLayerResults.length == layers(layers.length - 1),
       s"Shape mismatch: The output #neuron:${lastLayerResults.length} != #Classes:${layers(layers.length - 1)}")
+
+    var correctPred: Int = 0
     for (id_batch <- 0 until miniBatchSize) {
       val tmp_label = labels.getRandomLabel(rand).toInt
       batchLoss += -math.log(lastLayerResults(tmp_label)(id_batch))
+
+      var isCorrect: Boolean = true
+      for(id_class <- 0 until(numClasses)){
+        if(lastLayerResults(tmp_label)(id_batch) < lastLayerResults(id_class)(id_batch)){
+          isCorrect = false
+        }
+      }
+      if(isCorrect) correctPred += 1
     }
-    batchLoss / miniBatchSize
+    (batchLoss / miniBatchSize, correctPred * 1.0 / miniBatchSize)
   }
 
   /**
@@ -491,4 +508,17 @@ class MLP(@transient inputRDD: RDD[ArrayWorkSet[WorkSet]],
       System.arraycopy(srcArray(i), 0, dstArray(i), 0, srcArray(i).length)
     }
   }
+
+  def init_model(model: Array[Array[Array[Double]]]): Unit ={
+    for(i <- 0 until(model.length)){
+      for(j <- 0 until(model(i).length)){
+        val sqrIn = Math.sqrt(model(i).length)
+        for(k <- 0 until(model(i)(j).length)){
+//          model(i)(j)(k) = Random.nextGaussian() / sqrIn // initialize with calibrating
+          model(i)(j)(k) = Random.nextGaussian() * 0.01 // initialize with small numbers
+        }
+      }
+    }
+  }
+
 }

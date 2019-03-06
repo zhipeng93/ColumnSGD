@@ -1,6 +1,6 @@
 package pku.mllibFP.apps
 
-import org.apache.spark.mllib.classification.{LogisticRegressionWithSGD, SVMWithSGD}
+import org.apache.spark.mllib.classification.{LogisticRegressionWithSGD, SVMWithSGD, GhandLogRSGDShuffleModel}
 import org.apache.spark.mllib.regression.LabeledPoint
 import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.mllib.util.MLUtils
@@ -56,6 +56,13 @@ object MLlibApp{
             stepSize = step_size,
             miniBatchFraction = mini_batch_fraction)
         // the regularization is zero by default. They did not offer a interface for LR with SGD.
+        case "MLLIBSTARLR" =>
+          GhandLogRSGDShuffleModel.train(input = data_rdd,
+            numIterations=num_iteration,
+            stepSize=step_size,
+            regParam=0,
+            miniBatchFraction = mini_batch_fraction
+          )
       }
     }
 
